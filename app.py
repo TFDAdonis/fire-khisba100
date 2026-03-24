@@ -438,11 +438,11 @@ def main():
         st.caption("Draw on the map (tab 1) to find coordinates, then enter them here.")
         c1, c2 = st.columns(2)
         with c1:
-            min_lon = st.number_input("Min Lon", value=-10.0, min_value=-180.0, max_value=180.0, format="%.4f", step=0.5)
-            min_lat = st.number_input("Min Lat", value=4.0, min_value=-90.0, max_value=90.0, format="%.4f", step=0.5)
+            min_lon = st.number_input("Min Lon (West)", value=-10.0, min_value=-180.0, max_value=180.0, format="%.4f", step=0.5)
+            min_lat = st.number_input("Min Lat (South)", value=4.0, min_value=-90.0, max_value=90.0, format="%.4f", step=0.5)
         with c2:
-            max_lon = st.number_input("Max Lon", value=2.0, min_value=-180.0, max_value=180.0, format="%.4f", step=0.5)
-            max_lat = st.number_input("Max Lat", value=12.0, min_value=-90.0, max_value=90.0, format="%.4f", step=0.5)
+            max_lon = st.number_input("Max Lon (East)", value=2.0, min_value=-180.0, max_value=180.0, format="%.4f", step=0.5)
+            max_lat = st.number_input("Max Lat (North)", value=12.0, min_value=-90.0, max_value=90.0, format="%.4f", step=0.5)
 
         if min_lon >= max_lon or min_lat >= max_lat:
             st.error("Min values must be less than Max values.")
