@@ -98,28 +98,42 @@ DRAW_MAP_HTML = """
     }
     #coords-panel b { color:#4CAF50; }
     #coord-values {
-      display:grid; grid-template-columns:1fr 1fr;
+      display:grid; grid-template-columns:1fr;
       gap:8px; margin-top:8px;
     }
     .coord-box {
       background:#0e1117; border:1px solid #444; border-radius:6px;
       padding:6px 10px; font-size:12px; color:#ccc;
+      word-break:break-all;
+      font-family:monospace;
     }
-    .coord-box span { color:#fff; font-weight:bold; font-size:14px; display:block; }
+    .coord-box span { color:#fff; font-weight:bold; font-size:14px; display:block; margin-bottom:5px; }
     #hint { color:#aaa; font-size:12px; margin-top:6px; }
+    #apply-btn {
+      background:#4CAF50; color:white; border:none; padding:8px 16px;
+      border-radius:4px; cursor:pointer; margin-top:10px; width:100%;
+      font-size:14px; font-weight:bold;
+    }
+    #apply-btn:hover { background:#45a049; }
+    .success-msg { color:#4CAF50; margin-top:8px; font-size:12px; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="coords-panel">
-    <b>📐 Draw a rectangle on the map to get coordinates</b>
+    <b>✏️ Draw a polygon on the map</b>
     <div id="coord-values">
-      <div class="coord-box">Min Lon (West)<span id="min-lon">—</span></div>
-      <div class="coord-box">Max Lon (East)<span id="max-lon">—</span></div>
-      <div class="coord-box">Min Lat (South)<span id="min-lat">—</span></div>
-      <div class="coord-box">Max Lat (North)<span id="max-lat">—</span></div>
+      <div class="coord-box">
+        <span>📐 Polygon Geometry (GeoJSON)</span>
+        <div id="polygon-geojson" style="max-height:150px; overflow:auto; font-size:11px;">—</div>
+      </div>
     </div>
-    <div id="hint">Use the ▭ rectangle tool in the top-left toolbar, then copy the values above into the sidebar.</div>
+    <div id="hint">
+      Use the polygon tool (⬟) in the top-left toolbar to draw your area of interest.<br>
+      After drawing, click "Apply Polygon" to use it for analysis.
+    </div>
+    <button id="apply-btn">✅ Apply Polygon for Analysis</button>
+    <div id="status-msg"></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -135,8 +149,8 @@ DRAW_MAP_HTML = """
       attribution: 'OpenStreetMap', maxZoom: 19
     });
 
-    // Show existing AOI if any
-    EXISTING_RECT
+    // Show existing polygon if any
+    EXISTING_POLY
 
     // EE overlay tiles
     EE_TILES
@@ -146,45 +160,110 @@ DRAW_MAP_HTML = """
 
     var drawControl = new L.Control.Draw({
       draw: {
-        polyline: false, polygon: false, circle: false,
-        marker: false, circlemarker: false, rectangle: true
+        polyline: false, polygon: true, circle: false,
+        marker: false, circlemarker: false, rectangle: false
       },
-      edit: { featureGroup: drawnItems, edit: false, remove: true }
+      edit: { featureGroup: drawnItems, edit: true, remove: true }
     });
     map.addControl(drawControl);
 
-    function fmt(n) { return n.toFixed(5); }
+    var currentPolygon = null;
+    var currentGeoJSON = null;
+
+    function updatePolygonInfo(layer) {
+      if (!layer) return;
+      
+      var geojson = layer.toGeoJSON();
+      currentGeoJSON = geojson;
+      
+      // Format coordinates for display
+      var coords = geojson.geometry.coordinates[0];
+      var coordStr = JSON.stringify(coords.map(function(coord) {
+        return '[' + coord[0].toFixed(5) + ', ' + coord[1].toFixed(5) + ']';
+      }), null, 2);
+      
+      document.getElementById('polygon-geojson').innerHTML = 
+        '<pre style="margin:0; color:#aaa;">' + 
+        '{"type":"Polygon","coordinates":[' + coordStr + ']}</pre>';
+    }
 
     map.on(L.Draw.Event.CREATED, function(e) {
       drawnItems.clearLayers();
       drawnItems.addLayer(e.layer);
-      var b = e.layer.getBounds();
-      var minLon = fmt(b.getWest());
-      var maxLon = fmt(b.getEast());
-      var minLat = fmt(b.getSouth());
-      var maxLat = fmt(b.getNorth());
-      document.getElementById('min-lon').textContent = minLon;
-      document.getElementById('max-lon').textContent = maxLon;
-      document.getElementById('min-lat').textContent = minLat;
-      document.getElementById('max-lat').textContent = maxLat;
-      document.getElementById('hint').textContent =
-        '✅ Copy these values into the sidebar AOI inputs, then click Load & Process Data.';
+      currentPolygon = e.layer;
+      updatePolygonInfo(e.layer);
+      document.getElementById('hint').innerHTML = 
+        '✅ Polygon drawn! Click "Apply Polygon" to use it for analysis.';
     });
+
+    map.on(L.Draw.Event.EDITED, function(e) {
+      var layers = e.layers;
+      layers.eachLayer(function(layer) {
+        currentPolygon = layer;
+        updatePolygonInfo(layer);
+      });
+      document.getElementById('hint').innerHTML = 
+        '✅ Polygon edited! Click "Apply Polygon" to update analysis.';
+    });
+
+    document.getElementById('apply-btn').onclick = function() {
+      if (!currentGeoJSON) {
+        document.getElementById('status-msg').innerHTML = 
+          '<div class="success-msg" style="color:#ff6b35;">⚠️ Please draw a polygon first!</div>';
+        return;
+      }
+      
+      // Send polygon data to Streamlit
+      const data = {
+        type: 'polygon_applied',
+        geojson: currentGeoJSON
+      };
+      
+      // Use Streamlit's component communication
+      if (window.parent !== window) {
+        window.parent.postMessage({
+          type: 'streamlit:setComponentValue',
+          value: JSON.stringify(data)
+        }, '*');
+      }
+      
+      document.getElementById('status-msg').innerHTML = 
+        '<div class="success-msg">✅ Polygon applied! Go to sidebar and click "Load & Process Data"</div>';
+    };
   </script>
 </body>
 </html>
 """
 
 
-def render_draw_map(center_lat, center_lon, zoom, roi_coords=None, ee_tile_url=None, layer_name="Data"):
+def render_draw_map(center_lat, center_lon, zoom, roi_geometry=None, ee_tile_url=None, layer_name="Data"):
     existing = ""
-    if roi_coords:
-        mn_lon, mn_lat, mx_lon, mx_lat = roi_coords
-        existing = (
-            f"L.rectangle([[{mn_lat},{mn_lon}],[{mx_lat},{mx_lon}]], "
-            f"{{color:'#FF4444', weight:2, fill:true, fillOpacity:0.1}})"
-            f".addTo(map).bindTooltip('Current AOI');"
-        )
+    if roi_geometry:
+        try:
+            # Convert ee.Geometry to GeoJSON
+            if isinstance(roi_geometry, ee.Geometry):
+                geojson = roi_geometry.getInfo()
+            else:
+                geojson = roi_geometry
+            
+            if geojson and 'coordinates' in geojson:
+                coords = geojson['coordinates']
+                if geojson['type'] == 'Polygon':
+                    coords_list = coords[0]
+                    # Create Leaflet polygon
+                    latlngs = [[coord[1], coord[0]] for coord in coords_list]
+                    existing = f"""
+                    var polygon = L.polygon({json.dumps(latlngs)}, {{
+                        color: '#FF4444',
+                        weight: 2,
+                        fill: true,
+                        fillOpacity: 0.2
+                    }}).addTo(map);
+                    polygon.bindTooltip('Current AOI');
+                    drawnItems.addLayer(polygon);
+                    """
+        except:
+            pass
 
     ee_tiles = ""
     if ee_tile_url:
@@ -198,10 +277,10 @@ def render_draw_map(center_lat, center_lon, zoom, roi_coords=None, ee_tile_url=N
             .replace("INIT_LAT", str(center_lat))
             .replace("INIT_LON", str(center_lon))
             .replace("INIT_ZOOM", str(zoom))
-            .replace("EXISTING_RECT", existing)
+            .replace("EXISTING_POLY", existing)
             .replace("EE_TILES", ee_tiles))
 
-    components.html(html, height=510, scrolling=False)
+    components.html(html, height=540, scrolling=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -394,9 +473,9 @@ def plot_time_series_line(dates, values, ylabel, title, color):
 def main():
     st.title("🌍 Google Earth Engine — NDVI & LST Viewer")
     st.markdown(
-        "**Step 1:** Use the **Draw Map** tab to draw a rectangle and get AOI coordinates.  \n"
-        "**Step 2:** Enter those coordinates + dates in the sidebar.  \n"
-        "**Step 3:** Click **Load & Process Data** to generate all visualizations."
+        "**Step 1:** Use the **Draw Map** tab to draw a polygon (⬟ tool) on the map.  \n"
+        "**Step 2:** Click **Apply Polygon** after drawing.  \n"
+        "**Step 3:** Select date range in sidebar and click **Load & Process Data**."
     )
 
     ee_ok, ee_err = initialize_ee()
@@ -408,7 +487,9 @@ def main():
     # Session state defaults
     defaults = dict(
         ndvi_url=None, lst_url=None,
-        roi_coords=None, map_center=[20, 0], map_zoom=2,
+        roi_geometry=None,  # Store ee.Geometry object
+        roi_geojson=None,   # Store GeoJSON for display
+        map_center=[20, 0], map_zoom=2,
         ndvi_count=0, lst_count=0,
         ds_ndvi=None, ds_lst=None,
         ndvi_dates=[], ndvi_vals=[],
@@ -419,10 +500,22 @@ def main():
         if k not in st.session_state:
             st.session_state[k] = v
 
+    # Handle polygon data from map component
+    if 'polygon_data' not in st.session_state:
+        st.session_state.polygon_data = None
+    
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("⚙️ Parameters")
-
+        
+        # Display current AOI status
+        if st.session_state.roi_geojson:
+            st.success("✅ AOI Polygon Defined")
+            with st.expander("View Current AOI"):
+                st.json(st.session_state.roi_geojson)
+        else:
+            st.warning("⚠️ No AOI defined yet. Draw a polygon in the Draw Map tab!")
+        
         st.subheader("📅 Date Range")
         start_date = st.date_input("Start Date", value=datetime.date(2025, 1, 1),
                                    min_value=datetime.date(2012, 1, 1),
@@ -432,20 +525,6 @@ def main():
                                  max_value=datetime.date.today())
         if start_date >= end_date:
             st.error("End date must be after start date.")
-            st.stop()
-
-        st.subheader("📐 AOI Bounding Box")
-        st.caption("Draw on the map (tab 1) to find coordinates, then enter them here.")
-        c1, c2 = st.columns(2)
-        with c1:
-            min_lon = st.number_input("Min Lon", value=-10.0, min_value=-180.0, max_value=180.0, format="%.4f", step=0.5)
-            min_lat = st.number_input("Min Lat", value=4.0, min_value=-90.0, max_value=90.0, format="%.4f", step=0.5)
-        with c2:
-            max_lon = st.number_input("Max Lon", value=2.0, min_value=-180.0, max_value=180.0, format="%.4f", step=0.5)
-            max_lat = st.number_input("Max Lat", value=12.0, min_value=-90.0, max_value=90.0, format="%.4f", step=0.5)
-
-        if min_lon >= max_lon or min_lat >= max_lat:
-            st.error("Min values must be less than Max values.")
             st.stop()
 
         st.subheader("🗺️ Map Overlay")
@@ -459,7 +538,14 @@ def main():
         col_wrap = st.slider("Columns per row in grid plots", 2, 6, 4)
 
         st.divider()
-        run_btn = st.button("🚀 Load & Process Data", type="primary", use_container_width=True)
+        
+        # Only enable button if AOI is defined
+        run_btn = st.button("🚀 Load & Process Data", type="primary", 
+                           use_container_width=True,
+                           disabled=st.session_state.roi_geometry is None)
+        
+        if st.session_state.roi_geometry is None:
+            st.info("📝 Draw a polygon in the Draw Map tab first!")
 
         st.subheader("📦 Datasets")
         st.markdown("""
@@ -480,18 +566,24 @@ Band LST_1KM · 1 km · Kelvin
     ])
 
     # ── Process ───────────────────────────────────────────────────────────────
-    if run_btn:
-        roi_coords = (min_lon, min_lat, max_lon, max_lat)
-        roi = ee.Geometry.Rectangle(list(roi_coords))
+    if run_btn and st.session_state.roi_geometry:
+        roi = st.session_state.roi_geometry
         start_str = start_date.strftime('%Y-%m-%d')
         end_str   = end_date.strftime('%Y-%m-%d')
 
-        st.session_state.roi_coords   = roi_coords
-        st.session_state.map_center   = [(min_lat + max_lat)/2, (min_lon + max_lon)/2]
-        st.session_state.map_zoom     = 7
         st.session_state.active_layer = active_layer
-        st.session_state.ds_ndvi      = None
-        st.session_state.ds_lst       = None
+        
+        # Get bounding box for map centering
+        bounds = roi.bounds().getInfo()['coordinates'][0]
+        lons = [coord[0] for coord in bounds]
+        lats = [coord[1] for coord in bounds]
+        center_lon = (min(lons) + max(lons)) / 2
+        center_lat = (min(lats) + max(lats)) / 2
+        st.session_state.map_center = [center_lat, center_lon]
+        st.session_state.map_zoom = 8
+        
+        st.session_state.ds_ndvi = None
+        st.session_state.ds_lst = None
 
         prog = st.progress(0, text="Fetching NDVI tile layer…")
         try:
@@ -538,47 +630,66 @@ Band LST_1KM · 1 km · Kelvin
 
     # ── Tab 0: Draw Map ───────────────────────────────────────────────────────
     with tab0:
-        st.subheader("🖊️ Draw your Area of Interest")
+        st.subheader("🖊️ Draw Your Area of Interest")
         st.info(
-            "Use the **rectangle (▭) tool** in the top-left of the map below. "
-            "After drawing, the bounding box coordinates will appear in the panel below the map. "
-            "Copy those values into the **AOI Bounding Box** inputs in the sidebar, then click **Load & Process Data**."
+            "1. Use the **polygon tool (⬟)** in the top-left toolbar to draw your area of interest.\n"
+            "2. After drawing, click **Apply Polygon** to save it for analysis.\n"
+            "3. Go to sidebar and select date range, then click **Load & Process Data**."
         )
-        cx = st.session_state.map_center[1]
-        cy = st.session_state.map_center[0]
-        cz = st.session_state.map_zoom
-        render_draw_map(cy, cx, cz, roi_coords=st.session_state.roi_coords)
+        
+        # Center map on current ROI or default
+        if st.session_state.roi_geometry:
+            bounds = st.session_state.roi_geometry.bounds().getInfo()['coordinates'][0]
+            lons = [coord[0] for coord in bounds]
+            lats = [coord[1] for coord in bounds]
+            center_lon = (min(lons) + max(lons)) / 2
+            center_lat = (min(lats) + max(lats)) / 2
+            cx = center_lon
+            cy = center_lat
+            cz = 8
+        else:
+            cx = 0
+            cy = 20
+            cz = 2
+        
+        render_draw_map(cy, cx, cz, roi_geometry=st.session_state.roi_geometry)
 
     # ── Tab 1: Data Map ───────────────────────────────────────────────────────
     with tab1:
         st.subheader("🗺️ Interactive Data Map")
         has_data = st.session_state.ndvi_url or st.session_state.lst_url
         if not has_data:
-            st.info("Enter AOI & dates in the sidebar, then click **Load & Process Data**.")
-
-        if has_data:
+            st.info("Draw polygon in Draw Map tab, then click Load & Process Data.")
+        
+        if has_data and st.session_state.roi_geometry:
             ca, cb = st.columns(2)
             ca.metric("NDVI Images", st.session_state.ndvi_count)
             cb.metric("LST Images",  st.session_state.lst_count)
-            if st.session_state.roi_coords:
-                rc = st.session_state.roi_coords
-                st.caption(f"AOI: lon [{rc[0]:.3f} → {rc[2]:.3f}], lat [{rc[1]:.3f} → {rc[3]:.3f}]")
-
-        tile_url = (st.session_state.ndvi_url if active_layer == "NDVI"
-                    else st.session_state.lst_url)
-        cx = st.session_state.map_center[1]
-        cy = st.session_state.map_center[0]
-        cz = st.session_state.map_zoom
-        render_draw_map(cy, cx, cz,
-                        roi_coords=st.session_state.roi_coords,
-                        ee_tile_url=tile_url,
-                        layer_name=active_layer)
-
-        if has_data:
-            if active_layer == "NDVI":
-                st.markdown("**NDVI Legend:** 🔵 Blue (−0.2, bare/water) → ⬜ White → 🟡 Yellow → 🟢 Green → 🌲 Dark Green (0.8, dense vegetation)")
-            else:
-                st.markdown("**LST Legend:** 🔵 Dark Blue (270 K / −3°C) → 🩵 Cyan → 🟡 Yellow → 🔴 Red → 🟤 Dark Red (320 K / 47°C)")
+        
+        if st.session_state.roi_geometry:
+            tile_url = (st.session_state.ndvi_url if active_layer == "NDVI"
+                        else st.session_state.lst_url)
+            
+            # Center map on ROI
+            bounds = st.session_state.roi_geometry.bounds().getInfo()['coordinates'][0]
+            lons = [coord[0] for coord in bounds]
+            lats = [coord[1] for coord in bounds]
+            center_lon = (min(lons) + max(lons)) / 2
+            center_lat = (min(lats) + max(lats)) / 2
+            cx = center_lon
+            cy = center_lat
+            cz = 8
+            
+            render_draw_map(cy, cx, cz,
+                            roi_geometry=st.session_state.roi_geometry,
+                            ee_tile_url=tile_url,
+                            layer_name=active_layer)
+            
+            if has_data:
+                if active_layer == "NDVI":
+                    st.markdown("**NDVI Legend:** 🔵 Blue (−0.2, bare/water) → ⬜ White → 🟡 Yellow → 🟢 Green → 🌲 Dark Green (0.8, dense vegetation)")
+                else:
+                    st.markdown("**LST Legend:** 🔵 Dark Blue (270 K / −3°C) → 🩵 Cyan → 🟡 Yellow → 🔴 Red → 🟤 Dark Red (320 K / 47°C)")
 
     # ── Tab 2: NDVI Spatial Plots ─────────────────────────────────────────────
     with tab2:
@@ -597,7 +708,7 @@ Band LST_1KM · 1 km · Kelvin
             st.pyplot(fig)
             plt.close(fig)
         else:
-            st.info("No NDVI data loaded yet. Enter AOI & dates in sidebar then click **Load & Process Data**.")
+            st.info("No NDVI data loaded yet. Draw polygon in Draw Map tab then click Load & Process Data.")
 
     # ── Tab 3: LST Spatial Plots ──────────────────────────────────────────────
     with tab3:
@@ -616,7 +727,7 @@ Band LST_1KM · 1 km · Kelvin
             st.pyplot(fig)
             plt.close(fig)
         else:
-            st.info("No LST data loaded yet. Enter AOI & dates in sidebar then click **Load & Process Data**.")
+            st.info("No LST data loaded yet. Draw polygon in Draw Map tab then click Load & Process Data.")
 
     # ── Tab 4: Time Series ────────────────────────────────────────────────────
     with tab4:
@@ -662,12 +773,19 @@ Band LST_1KM · 1 km · Kelvin
 ### GEE NDVI & LST Viewer
 Connects to Google Earth Engine via service account `citric-hawk-457513-i6`.
 
+**Workflow:**
+1. **Draw Map** — Draw a polygon on the map using the polygon tool (⬟)
+2. **Apply Polygon** — Click "Apply Polygon" to save your AOI
+3. **Load Data** — Select date range and click "Load & Process Data"
+
 **Tabs:**
-- **Draw Map** — draw a rectangle to discover bounding box coordinates  
+- **Draw Map** — draw polygon to define your area of interest  
 - **Data Map** — interactive map with NDVI or LST overlay from EE tile server  
-- **NDVI Spatial Plots** — grid of spatial NDVI maps per time step (like Colab `xr.plot col='time'`)  
+- **NDVI Spatial Plots** — grid of spatial NDVI maps per time step  
 - **LST Spatial Plots** — same for land surface temperature  
 - **Time Series** — line charts of spatial mean NDVI and LST over time  
+
+**Note:** All analysis is performed only on the polygon you draw. No default geometry is used.
         """)
 
 
