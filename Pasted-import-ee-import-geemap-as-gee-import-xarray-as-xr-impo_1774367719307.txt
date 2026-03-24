@@ -1,0 +1,201 @@
+import ee
+import geemap as gee
+import xarray as xr
+import ipywidgets as widgets
+from IPython.display import display
+import datetime
+
+# Install xee if needed
+try:
+    import xee
+except:
+    !pip install xee
+    import xee
+
+# Initialize Earth Engine
+try:
+    ee.Initialize(project='citric-hawk-457513-i6')
+except:
+    ee.Authenticate()
+    ee.Initialize(project='citric-hawk-457513-i6')
+
+# Create the map
+print("Draw a rectangle on the map to select your area of interest")
+Map = gee.Map(basemap='TERRAIN', height='500px')
+display(Map)
+
+# Create simple date controls
+print("\n" + "="*50)
+print("DATE SELECTION")
+print("="*50)
+
+# Date inputs as simple text boxes - using your exact dates as default
+start_date = widgets.Text(
+    value='2025-01-01',
+    description='Start Date:',
+    layout=widgets.Layout(width='300px')
+)
+
+end_date = widgets.Text(
+    value='2025-02-01',
+    description='End Date:',
+    layout=widgets.Layout(width='300px')
+)
+
+process_btn = widgets.Button(
+    description='Load & Display Data',
+    button_style='success',
+    layout=widgets.Layout(width='200px')
+)
+
+output = widgets.Output()
+plot_output_ndvi = widgets.Output()
+plot_output_lst = widgets.Output()
+
+# Display controls
+display(widgets.VBox([
+    start_date,
+    end_date,
+    process_btn,
+    output
+]))
+
+# Display plot areas
+print("\n" + "="*50)
+print("NDVI TIME SERIES")
+print("="*50)
+display(plot_output_ndvi)
+
+print("\n" + "="*50)
+print("LST TIME SERIES")
+print("="*50)
+display(plot_output_lst)
+
+def load_and_display(b):
+    with output:
+        output.clear_output()
+
+        # Get ROI from map
+        if Map.draw_last_feature is None:
+            print("❌ Please draw a rectangle on the map first!")
+            return
+
+        roi = Map.draw_last_feature.geometry()
+
+        # Get date values
+        time_start = ee.Date(start_date.value)
+        time_end = ee.Date(end_date.value)
+
+        print(f"Loading data from {start_date.value} to {end_date.value}...")
+
+        try:
+            # ============= NDVI PROCESSING - EXACTLY YOUR CODE =============
+            print("Processing NDVI...")
+
+            # Load surface reflectance
+            sr = ee.ImageCollection("NASA/VIIRS/002/VNP09GA")\
+                .filterDate(time_start, time_end)\
+                .filterBounds(roi)\
+                .select('I1', 'I2')
+
+            # NDVI function - EXACTLY YOURS
+            def ndvi(img):
+                index = img.normalizedDifference(['I2','I1']).rename('ndvi')
+                return index.copyProperties(img, img.propertyNames())
+
+            viirs_ndvi = sr.map(ndvi)
+
+            # Check if we have images
+            ndvi_count = viirs_ndvi.size().getInfo()
+            print(f"Found {ndvi_count} NDVI images")
+
+            if ndvi_count > 0:
+                # Convert to xarray - EXACTLY YOUR SCALE (0.001)
+                ds_ndvi = xr.open_dataset(
+                    viirs_ndvi,
+                    engine='ee',
+                    crs='EPSG:4326',
+                    scale=0.001,
+                    geometry=roi
+                )
+
+                # Display NDVI - EXACTLY YOUR PLOT STYLING
+                with plot_output_ndvi:
+                    plot_output_ndvi.clear_output(wait=True)
+                    if ndvi_count > 0:
+                        print(f"📊 NDVI Dataset Shape: {ds_ndvi.ndvi.shape}")
+                        ds_ndvi.ndvi.plot(
+                            x='lon',
+                            y='lat',
+                            col='time',
+                            col_wrap=5,
+                            robust=True,
+                            cmap='jet'
+                        )
+                    else:
+                        print("No NDVI data to display")
+            else:
+                with plot_output_ndvi:
+                    plot_output_ndvi.clear_output()
+                    print("❌ No NDVI images found for this date range")
+
+            # ============= LST PROCESSING - EXACTLY YOUR CODE =============
+            print("\nProcessing LST...")
+
+            # Load LST - EXACTLY YOURS
+            lst = ee.ImageCollection("NASA/VIIRS/002/VNP21A1D")\
+                .select('LST_1KM')\
+                .filterDate(time_start, time_end)\
+                .filterBounds(roi)
+
+            # Check if we have images
+            lst_count = lst.size().getInfo()
+            print(f"Found {lst_count} LST images")
+
+            if lst_count > 0:
+                # Convert to xarray - EXACTLY YOUR SCALE (0.005)
+                ds_lst = xr.open_dataset(
+                    lst,
+                    engine='ee',
+                    crs='EPSG:4326',
+                    scale=0.005,
+                    geometry=roi
+                )
+
+                # Display LST - EXACTLY YOUR PLOT STYLING
+                with plot_output_lst:
+                    plot_output_lst.clear_output(wait=True)
+                    if lst_count > 0:
+                        print(f"🌡️ LST Dataset Shape: {ds_lst.LST_1KM.shape}")
+                        ds_lst.LST_1KM.plot(
+                            x='lon',
+                            y='lat',
+                            cmap='hot_r',
+                            col='time',
+                            col_wrap=5,
+                            robust=True
+                        )
+                    else:
+                        print("No LST data to display")
+            else:
+                with plot_output_lst:
+                    plot_output_lst.clear_output()
+                    print("❌ No LST images found for this date range")
+
+            print("\n✅ Done! Scroll up to see the plots.")
+
+        except Exception as e:
+            print(f"Error: {e}")
+            import traceback
+            traceback.print_exc()
+
+# Connect button
+process_btn.on_click(load_and_display)
+
+print("\n✅ Ready! Follow these steps:")
+print("1. Draw a rectangle on the map")
+print("2. Adjust dates if needed (default: 2025-01-01 to 2025-02-01)")
+print("3. Click 'Load & Display Data'")
+print("\nThe visualizations will appear exactly as in your original code:")
+print("- NDVI: jet colormap, 0.001 scale, time series plots")
+print("- LST: hot_r colormap, 0.005 scale, time series plots")
