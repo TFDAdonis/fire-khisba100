@@ -116,6 +116,7 @@ DRAW_MAP_HTML = """
     }
     #apply-btn:hover { background:#45a049; }
     .success-msg { color:#4CAF50; margin-top:8px; font-size:12px; }
+    .error-msg { color:#ff6b35; margin-top:8px; font-size:12px; }
   </style>
 </head>
 <body>
@@ -124,8 +125,8 @@ DRAW_MAP_HTML = """
     <b>✏️ Draw a polygon on the map</b>
     <div id="coord-values">
       <div class="coord-box">
-        <span>📐 Polygon Geometry (GeoJSON)</span>
-        <div id="polygon-geojson" style="max-height:150px; overflow:auto; font-size:11px;">—</div>
+        <span>📐 Polygon Coordinates (click Apply to save)</span>
+        <div id="polygon-coords" style="max-height:150px; overflow:auto; font-size:11px;">No polygon drawn yet</div>
       </div>
     </div>
     <div id="hint">
@@ -168,23 +169,32 @@ DRAW_MAP_HTML = """
     map.addControl(drawControl);
 
     var currentPolygon = null;
-    var currentGeoJSON = null;
+    var currentCoords = null;
+
+    function formatCoords(coords) {
+      var formatted = coords.map(function(coord) {
+        return '[' + coord[0].toFixed(5) + ', ' + coord[1].toFixed(5) + ']';
+      }).join(', ');
+      return '[' + formatted + ']';
+    }
 
     function updatePolygonInfo(layer) {
       if (!layer) return;
       
-      var geojson = layer.toGeoJSON();
-      currentGeoJSON = geojson;
+      var latlngs = layer.getLatLngs()[0];
+      var coords = latlngs.map(function(latlng) {
+        return [latlng.lng, latlng.lat];
+      });
+      // Close the polygon by adding first point at end if not already closed
+      if (coords[0][0] !== coords[coords.length-1][0] || 
+          coords[0][1] !== coords[coords.length-1][1]) {
+        coords.push(coords[0]);
+      }
+      currentCoords = coords;
       
-      // Format coordinates for display
-      var coords = geojson.geometry.coordinates[0];
-      var coordStr = JSON.stringify(coords.map(function(coord) {
-        return '[' + coord[0].toFixed(5) + ', ' + coord[1].toFixed(5) + ']';
-      }), null, 2);
-      
-      document.getElementById('polygon-geojson').innerHTML = 
-        '<pre style="margin:0; color:#aaa;">' + 
-        '{"type":"Polygon","coordinates":[' + coordStr + ']}</pre>';
+      var coordStr = formatCoords(coords);
+      document.getElementById('polygon-coords').innerHTML = 
+        '<pre style="margin:0; color:#aaa;">Polygon coordinates:\\n' + coordStr + '</pre>';
     }
 
     map.on(L.Draw.Event.CREATED, function(e) {
@@ -194,6 +204,7 @@ DRAW_MAP_HTML = """
       updatePolygonInfo(e.layer);
       document.getElementById('hint').innerHTML = 
         '✅ Polygon drawn! Click "Apply Polygon" to use it for analysis.';
+      document.getElementById('status-msg').innerHTML = '';
     });
 
     map.on(L.Draw.Event.EDITED, function(e) {
@@ -204,27 +215,34 @@ DRAW_MAP_HTML = """
       });
       document.getElementById('hint').innerHTML = 
         '✅ Polygon edited! Click "Apply Polygon" to update analysis.';
+      document.getElementById('status-msg').innerHTML = '';
     });
 
     document.getElementById('apply-btn').onclick = function() {
-      if (!currentGeoJSON) {
+      if (!currentCoords) {
         document.getElementById('status-msg').innerHTML = 
-          '<div class="success-msg" style="color:#ff6b35;">⚠️ Please draw a polygon first!</div>';
+          '<div class="error-msg">⚠️ Please draw a polygon first!</div>';
         return;
       }
       
-      // Send polygon data to Streamlit
-      const data = {
-        type: 'polygon_applied',
-        geojson: currentGeoJSON
+      // Create GeoJSON
+      var geojson = {
+        type: "Polygon",
+        coordinates: [currentCoords]
       };
       
-      // Use Streamlit's component communication
+      // Send polygon data to Streamlit
+      var data = {
+        type: "polygon_applied",
+        geojson: geojson
+      };
+      
+      // Send message to Streamlit
       if (window.parent !== window) {
         window.parent.postMessage({
-          type: 'streamlit:setComponentValue',
+          type: "streamlit:setComponentValue",
           value: JSON.stringify(data)
-        }, '*');
+        }, "*");
       }
       
       document.getElementById('status-msg').innerHTML = 
@@ -247,21 +265,19 @@ def render_draw_map(center_lat, center_lon, zoom, roi_geometry=None, ee_tile_url
                 geojson = roi_geometry
             
             if geojson and 'coordinates' in geojson:
-                coords = geojson['coordinates']
-                if geojson['type'] == 'Polygon':
-                    coords_list = coords[0]
-                    # Create Leaflet polygon
-                    latlngs = [[coord[1], coord[0]] for coord in coords_list]
-                    existing = f"""
-                    var polygon = L.polygon({json.dumps(latlngs)}, {{
-                        color: '#FF4444',
-                        weight: 2,
-                        fill: true,
-                        fillOpacity: 0.2
-                    }}).addTo(map);
-                    polygon.bindTooltip('Current AOI');
-                    drawnItems.addLayer(polygon);
-                    """
+                coords = geojson['coordinates'][0]
+                # Create Leaflet polygon
+                latlngs = [[coord[1], coord[0]] for coord in coords]
+                existing = f"""
+                var polygon = L.polygon({json.dumps(latlngs)}, {{
+                    color: '#FF4444',
+                    weight: 2,
+                    fill: true,
+                    fillOpacity: 0.2
+                }}).addTo(map);
+                polygon.bindTooltip('Current AOI');
+                drawnItems.addLayer(polygon);
+                """
         except:
             pass
 
@@ -500,9 +516,20 @@ def main():
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # Handle polygon data from map component
-    if 'polygon_data' not in st.session_state:
-        st.session_state.polygon_data = None
+    # Handle polygon data from query parameters
+    query_params = st.query_params
+    
+    if 'polygon_geojson' in query_params:
+        try:
+            polygon_geojson = json.loads(query_params['polygon_geojson'])
+            if polygon_geojson and 'coordinates' in polygon_geojson:
+                st.session_state.roi_geojson = polygon_geojson
+                # Create ee.Geometry from GeoJSON
+                st.session_state.roi_geometry = ee.Geometry(polygon_geojson)
+                st.success("✅ Polygon loaded from map!")
+                st.rerun()
+        except:
+            pass
     
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
@@ -514,7 +541,7 @@ def main():
             with st.expander("View Current AOI"):
                 st.json(st.session_state.roi_geojson)
         else:
-            st.warning("⚠️ No AOI defined yet. Draw a polygon in the Draw Map tab!")
+            st.warning("⚠️ No AOI defined yet. Draw a polygon in the Draw Map tab and click Apply Polygon!")
         
         st.subheader("📅 Date Range")
         start_date = st.date_input("Start Date", value=datetime.date(2025, 1, 1),
@@ -545,7 +572,7 @@ def main():
                            disabled=st.session_state.roi_geometry is None)
         
         if st.session_state.roi_geometry is None:
-            st.info("📝 Draw a polygon in the Draw Map tab first!")
+            st.info("📝 Draw a polygon in the Draw Map tab and click Apply Polygon first!")
 
         st.subheader("📦 Datasets")
         st.markdown("""
