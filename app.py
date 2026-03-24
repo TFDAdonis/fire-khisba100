@@ -1,15 +1,12 @@
 import streamlit as st
 import ee
-import json
 import datetime
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import folium
-import streamlit.components.v1 as components
 import xarray as xr
+import geemap.foliumap as geemap
+from streamlit_folium import st_folium
+import folium
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -77,743 +74,393 @@ e5aU1RW6tlG8nzHHwK2FeyI=
         return False, str(e)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Map with draw controls (pure Leaflet, no streamlit-folium)
-# ─────────────────────────────────────────────────────────────────────────────
-DRAW_MAP_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body { background:#0e1117; color:#fafafa; font-family:sans-serif; }
-    #map { height: 420px; width: 100%; }
-    #coords-panel {
-      background:#1e2130; padding:12px 16px; font-size:13px;
-      border-top: 1px solid #333;
+def create_map():
+    """Create a map with drawing controls"""
+    m = geemap.Map(
+        center=[20, 0],
+        zoom=2,
+        basemap='HYBRID',
+        draw_ctrl=True,
+        draw_export=True
+    )
+    
+    # Add drawing control for rectangle only
+    m.draw_control = {
+        'draw': {
+            'polyline': False,
+            'polygon': False,
+            'circle': False,
+            'marker': False,
+            'circlemarker': False,
+            'rectangle': True
+        }
     }
-    #coords-panel b { color:#4CAF50; }
-    #coord-values {
-      display:grid; grid-template-columns:1fr;
-      gap:8px; margin-top:8px;
-    }
-    .coord-box {
-      background:#0e1117; border:1px solid #444; border-radius:6px;
-      padding:6px 10px; font-size:12px; color:#ccc;
-      word-break:break-all;
-      font-family:monospace;
-    }
-    .coord-box span { color:#fff; font-weight:bold; font-size:14px; display:block; margin-bottom:5px; }
-    #hint { color:#aaa; font-size:12px; margin-top:6px; }
-    #apply-btn {
-      background:#4CAF50; color:white; border:none; padding:8px 16px;
-      border-radius:4px; cursor:pointer; margin-top:10px; width:100%;
-      font-size:14px; font-weight:bold;
-    }
-    #apply-btn:hover { background:#45a049; }
-    .success-msg { color:#4CAF50; margin-top:8px; font-size:12px; }
-    .error-msg { color:#ff6b35; margin-top:8px; font-size:12px; }
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <div id="coords-panel">
-    <b>✏️ Draw a polygon on the map</b>
-    <div id="coord-values">
-      <div class="coord-box">
-        <span>📐 Polygon Coordinates (click Apply to save)</span>
-        <div id="polygon-coords" style="max-height:150px; overflow:auto; font-size:11px;">No polygon drawn yet</div>
-      </div>
-    </div>
-    <div id="hint">
-      Use the polygon tool (⬟) in the top-left toolbar to draw your area of interest.<br>
-      After drawing, click "Apply Polygon" to use it for analysis.
-    </div>
-    <button id="apply-btn">✅ Apply Polygon for Analysis</button>
-    <div id="status-msg"></div>
-  </div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-  <script>
-    var map = L.map('map').setView([INIT_LAT, INIT_LON], INIT_ZOOM);
-
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      attribution: 'Esri World Imagery', maxZoom: 18
-    }).addTo(map);
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: 'OpenStreetMap', maxZoom: 19
-    });
-
-    // Show existing polygon if any
-    EXISTING_POLY
-
-    // EE overlay tiles
-    EE_TILES
-
-    var drawnItems = new L.FeatureGroup();
-    map.addLayer(drawnItems);
-
-    var drawControl = new L.Control.Draw({
-      draw: {
-        polyline: false, polygon: true, circle: false,
-        marker: false, circlemarker: false, rectangle: false
-      },
-      edit: { featureGroup: drawnItems, edit: true, remove: true }
-    });
-    map.addControl(drawControl);
-
-    var currentPolygon = null;
-    var currentCoords = null;
-
-    function formatCoords(coords) {
-      var formatted = coords.map(function(coord) {
-        return '[' + coord[0].toFixed(5) + ', ' + coord[1].toFixed(5) + ']';
-      }).join(', ');
-      return '[' + formatted + ']';
-    }
-
-    function updatePolygonInfo(layer) {
-      if (!layer) return;
-      
-      var latlngs = layer.getLatLngs()[0];
-      var coords = latlngs.map(function(latlng) {
-        return [latlng.lng, latlng.lat];
-      });
-      // Close the polygon by adding first point at end if not already closed
-      if (coords[0][0] !== coords[coords.length-1][0] || 
-          coords[0][1] !== coords[coords.length-1][1]) {
-        coords.push(coords[0]);
-      }
-      currentCoords = coords;
-      
-      var coordStr = formatCoords(coords);
-      document.getElementById('polygon-coords').innerHTML = 
-        '<pre style="margin:0; color:#aaa;">Polygon coordinates:\\n' + coordStr + '</pre>';
-    }
-
-    map.on(L.Draw.Event.CREATED, function(e) {
-      drawnItems.clearLayers();
-      drawnItems.addLayer(e.layer);
-      currentPolygon = e.layer;
-      updatePolygonInfo(e.layer);
-      document.getElementById('hint').innerHTML = 
-        '✅ Polygon drawn! Click "Apply Polygon" to use it for analysis.';
-      document.getElementById('status-msg').innerHTML = '';
-    });
-
-    map.on(L.Draw.Event.EDITED, function(e) {
-      var layers = e.layers;
-      layers.eachLayer(function(layer) {
-        currentPolygon = layer;
-        updatePolygonInfo(layer);
-      });
-      document.getElementById('hint').innerHTML = 
-        '✅ Polygon edited! Click "Apply Polygon" to update analysis.';
-      document.getElementById('status-msg').innerHTML = '';
-    });
-
-    document.getElementById('apply-btn').onclick = function() {
-      if (!currentCoords) {
-        document.getElementById('status-msg').innerHTML = 
-          '<div class="error-msg">⚠️ Please draw a polygon first!</div>';
-        return;
-      }
-      
-      // Create GeoJSON
-      var geojson = {
-        type: "Polygon",
-        coordinates: [currentCoords]
-      };
-      
-      // Send polygon data to Streamlit
-      var data = {
-        type: "polygon_applied",
-        geojson: geojson
-      };
-      
-      // Send message to Streamlit
-      if (window.parent !== window) {
-        window.parent.postMessage({
-          type: "streamlit:setComponentValue",
-          value: JSON.stringify(data)
-        }, "*");
-      }
-      
-      document.getElementById('status-msg').innerHTML = 
-        '<div class="success-msg">✅ Polygon applied! Go to sidebar and click "Load & Process Data"</div>';
-    };
-  </script>
-</body>
-</html>
-"""
+    
+    return m
 
 
-def render_draw_map(center_lat, center_lon, zoom, roi_geometry=None, ee_tile_url=None, layer_name="Data"):
-    existing = ""
-    if roi_geometry:
-        try:
-            # Convert ee.Geometry to GeoJSON
-            if isinstance(roi_geometry, ee.Geometry):
-                geojson = roi_geometry.getInfo()
-            else:
-                geojson = roi_geometry
-            
-            if geojson and 'coordinates' in geojson:
-                coords = geojson['coordinates'][0]
-                # Create Leaflet polygon
-                latlngs = [[coord[1], coord[0]] for coord in coords]
-                existing = f"""
-                var polygon = L.polygon({json.dumps(latlngs)}, {{
-                    color: '#FF4444',
-                    weight: 2,
-                    fill: true,
-                    fillOpacity: 0.2
-                }}).addTo(map);
-                polygon.bindTooltip('Current AOI');
-                drawnItems.addLayer(polygon);
-                """
-        except:
-            pass
-
-    ee_tiles = ""
-    if ee_tile_url:
-        ee_tiles = (
-            f"L.tileLayer('{ee_tile_url}', "
-            f"{{attribution:'Google Earth Engine — {layer_name}', maxZoom:18, opacity:0.8}})"
-            f".addTo(map);"
+def get_ndvi_data(roi, start_date, end_date, scale=0.001):
+    """Load NDVI data exactly like the original code"""
+    sr = ee.ImageCollection("NASA/VIIRS/002/VNP09GA")\
+        .filterDate(start_date, end_date)\
+        .filterBounds(roi)\
+        .select('I1', 'I2')
+    
+    def ndvi(img):
+        index = img.normalizedDifference(['I2','I1']).rename('ndvi')
+        return index.copyProperties(img, img.propertyNames())
+    
+    viirs_ndvi = sr.map(ndvi)
+    count = viirs_ndvi.size().getInfo()
+    
+    if count > 0:
+        ds = xr.open_dataset(
+            viirs_ndvi,
+            engine='ee',
+            crs='EPSG:4326',
+            scale=scale,
+            geometry=roi
         )
-
-    html = (DRAW_MAP_HTML
-            .replace("INIT_LAT", str(center_lat))
-            .replace("INIT_LON", str(center_lon))
-            .replace("INIT_ZOOM", str(zoom))
-            .replace("EXISTING_POLY", existing)
-            .replace("EE_TILES", ee_tiles))
-
-    components.html(html, height=540, scrolling=False)
+        return ds, count
+    return None, 0
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Earth Engine helpers
-# ─────────────────────────────────────────────────────────────────────────────
-def get_ndvi_tile_url(roi, start_date, end_date):
-    sr = (ee.ImageCollection("NASA/VIIRS/002/VNP09GA")
-          .filterDate(start_date, end_date)
-          .filterBounds(roi)
-          .select('I1', 'I2'))
-    count = sr.size().getInfo()
-    mean_ndvi = sr.map(lambda img: img.normalizedDifference(['I2', 'I1']).rename('ndvi')).mean()
-    vis = {'min': -0.2, 'max': 0.8, 'palette': ['blue', 'white', 'yellow', 'green', 'darkgreen']}
-    url = mean_ndvi.getMapId(vis)['tile_fetcher'].url_format
-    return url, count
-
-
-def get_lst_tile_url(roi, start_date, end_date):
-    lst = (ee.ImageCollection("NASA/VIIRS/002/VNP21A1D")
-           .select('LST_1KM')
-           .filterDate(start_date, end_date)
-           .filterBounds(roi))
+def get_lst_data(roi, start_date, end_date, scale=0.005):
+    """Load LST data exactly like the original code"""
+    lst = ee.ImageCollection("NASA/VIIRS/002/VNP21A1D")\
+        .select('LST_1KM')\
+        .filterDate(start_date, end_date)\
+        .filterBounds(roi)
+    
     count = lst.size().getInfo()
-    vis = {'min': 270, 'max': 320,
-           'palette': ['#000080', '#0000FF', '#00FFFF', '#FFFF00', '#FF0000', '#800000']}
-    url = lst.mean().getMapId(vis)['tile_fetcher'].url_format
-    return url, count
-
-
-def load_ndvi_xarray(roi, start_date, end_date, scale):
-    sr = (ee.ImageCollection("NASA/VIIRS/002/VNP09GA")
-          .filterDate(start_date, end_date)
-          .filterBounds(roi)
-          .select('I1', 'I2'))
-    viirs_ndvi = sr.map(lambda img: img.normalizedDifference(['I2', 'I1']).rename('ndvi').copyProperties(img, img.propertyNames()))
-    import xee
-    ds = xr.open_dataset(
-        viirs_ndvi, engine='ee',
-        crs='EPSG:4326', scale=scale, geometry=roi
-    )
-    return ds, sr.size().getInfo()
-
-
-def load_lst_xarray(roi, start_date, end_date, scale):
-    lst = (ee.ImageCollection("NASA/VIIRS/002/VNP21A1D")
-           .select('LST_1KM')
-           .filterDate(start_date, end_date)
-           .filterBounds(roi))
-    import xee
-    ds = xr.open_dataset(
-        lst, engine='ee',
-        crs='EPSG:4326', scale=scale, geometry=roi
-    )
-    return ds, lst.size().getInfo()
-
-
-def compute_time_series(ds, var_name, offset=0.0):
-    """Reduce spatial mean over time from an xarray Dataset."""
-    da = ds[var_name]
-    means = da.mean(dim=['lon', 'lat']).values
-    times = [str(t)[:10] for t in da.time.values]
-    values = [float(v) + offset for v in means if not np.isnan(v)]
-    dates = [times[i] for i, v in enumerate(means) if not np.isnan(v)]
-    return dates, values
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Colab-style spatial grid plot (ds.var.plot col='time'))
-# ─────────────────────────────────────────────────────────────────────────────
-def plot_spatial_grid(ds, var_name, cmap, title, col_wrap=4, vmin=None, vmax=None):
-    da = ds[var_name]
-    times = da.time.values
-    n = len(times)
-    if n == 0:
-        fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, 'No data', ha='center', va='center')
-        return fig
-
-    ncols = min(col_wrap, n)
-    nrows = int(np.ceil(n / ncols))
-    fig_w = ncols * 3.5
-    fig_h = nrows * 3.2
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h))
-    fig.patch.set_facecolor('#0e1117')
-    fig.suptitle(title, color='white', fontsize=13, y=1.01)
-
-    if n == 1:
-        axes = np.array([[axes]])
-    elif nrows == 1:
-        axes = axes.reshape(1, -1)
-    elif ncols == 1:
-        axes = axes.reshape(-1, 1)
-
-    flat_axes = axes.flatten()
-
-    arr = da.values  # (time, lat, lon) or (time, lon, lat) depending on ee output
-    # Determine robust vmin/vmax
-    valid = arr[np.isfinite(arr)]
-    if len(valid) == 0:
-        plt.close(fig)
-        fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, 'No valid data', ha='center', va='center')
-        return fig
-
-    if vmin is None:
-        vmin = float(np.nanpercentile(valid, 2))
-    if vmax is None:
-        vmax = float(np.nanpercentile(valid, 98))
-
-    # Detect dimension order
-    dims = list(da.dims)  # e.g. ('time','lat','lon') or ('time','lon','lat')
-    if 'lat' in dims and 'lon' in dims:
-        lat_idx = dims.index('lat')
-        lon_idx = dims.index('lon')
-        lats = da['lat'].values
-        lons = da['lon'].values
-    else:
-        lat_idx, lon_idx = 1, 2
-        lats = np.arange(arr.shape[1])
-        lons = np.arange(arr.shape[2])
-
-    for i, t in enumerate(times):
-        ax = flat_axes[i]
-        ax.set_facecolor('#0e1117')
-
-        # slice this time step
-        if len(arr.shape) == 3:
-            img = arr[i]
-        else:
-            img = arr[i]
-
-        # If dims are (time, lon, lat), transpose to (lat, lon)
-        if lat_idx == 2:
-            img = img.T
-
-        im = ax.imshow(
-            img[::-1],  # flip latitude axis so north is up
-            extent=[lons.min(), lons.max(), lats.min(), lats.max()],
-            cmap=cmap, vmin=vmin, vmax=vmax,
-            aspect='auto', interpolation='nearest'
+    
+    if count > 0:
+        ds = xr.open_dataset(
+            lst,
+            engine='ee',
+            crs='EPSG:4326',
+            scale=scale,
+            geometry=roi
         )
-
-        date_str = str(t)[:10]
-        ax.set_title(date_str, color='white', fontsize=8, pad=3)
-        ax.tick_params(colors='white', labelsize=6)
-        for spine in ax.spines.values():
-            spine.set_edgecolor('#444')
-
-    # Hide unused axes
-    for j in range(n, len(flat_axes)):
-        flat_axes[j].set_visible(False)
-
-    # Shared colorbar
-    cbar = fig.colorbar(im, ax=flat_axes[:n], orientation='vertical', fraction=0.015, pad=0.04)
-    cbar.ax.tick_params(colors='white', labelsize=8)
-    cbar.ax.yaxis.label.set_color('white')
-
-    plt.tight_layout()
-    return fig
+        return ds, count
+    return None, 0
 
 
-def plot_time_series_line(dates, values, ylabel, title, color):
-    fig, ax = plt.subplots(figsize=(10, 3.5))
-    fig.patch.set_facecolor('#1e2130')
-    ax.set_facecolor('#1e2130')
-    if dates:
-        x = list(range(len(dates)))
-        ax.fill_between(x, values, alpha=0.25, color=color)
-        ax.plot(x, values, 'o-', color=color, linewidth=2, markersize=5)
-        ax.set_xticks(x)
-        ax.set_xticklabels(dates, rotation=45, ha='right', color='white', fontsize=8)
-        ax.grid(True, alpha=0.2, color='gray')
-        ax.set_ylim(min(values) * 0.95, max(values) * 1.05)
+def plot_ndvi_grid(ds):
+    """Plot NDVI time series grid"""
+    if ds is None:
+        return None
+    
+    n = len(ds.time)
+    if n == 0:
+        return None
+    
+    ncols = min(4, n)
+    nrows = int(np.ceil(n / ncols))
+    
+    fig, axes = plt.subplots(nrows, ncols, figsize=(15, 4*nrows))
+    fig.suptitle('NDVI Time Series', fontsize=16, y=1.02)
+    
+    if n == 1:
+        axes = [axes]
     else:
-        ax.text(0.5, 0.5, 'No data — load data first', ha='center', va='center',
-                color='white', transform=ax.transAxes, fontsize=13)
-    ax.set_ylabel(ylabel, color='white')
-    ax.set_title(title, color='white', fontsize=12, pad=8)
-    ax.tick_params(colors='white')
-    for sp in ax.spines.values():
-        sp.set_edgecolor('#555')
+        axes = axes.flatten()
+    
+    for i in range(n):
+        ax = axes[i]
+        ds.ndvi.isel(time=i).plot(ax=ax, cmap='jet', robust=True)
+        date_str = str(ds.time.values[i])[:10]
+        ax.set_title(date_str)
+    
+    # Hide empty subplots
+    for i in range(n, len(axes)):
+        axes[i].set_visible(False)
+    
     plt.tight_layout()
     return fig
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
+def plot_lst_grid(ds):
+    """Plot LST time series grid"""
+    if ds is None:
+        return None
+    
+    n = len(ds.time)
+    if n == 0:
+        return None
+    
+    ncols = min(4, n)
+    nrows = int(np.ceil(n / ncols))
+    
+    fig, axes = plt.subplots(nrows, ncols, figsize=(15, 4*nrows))
+    fig.suptitle('LST Time Series (Kelvin)', fontsize=16, y=1.02)
+    
+    if n == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+    
+    for i in range(n):
+        ax = axes[i]
+        ds.LST_1KM.isel(time=i).plot(ax=ax, cmap='hot_r', robust=True)
+        date_str = str(ds.time.values[i])[:10]
+        ax.set_title(date_str)
+    
+    # Hide empty subplots
+    for i in range(n, len(axes)):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    return fig
+
+
 def main():
     st.title("🌍 Google Earth Engine — NDVI & LST Viewer")
-    st.markdown(
-        "**Step 1:** Use the **Draw Map** tab to draw a polygon (⬟ tool) on the map.  \n"
-        "**Step 2:** Click **Apply Polygon** after drawing.  \n"
-        "**Step 3:** Select date range in sidebar and click **Load & Process Data**."
-    )
-
+    st.markdown("""
+    **How to use:**
+    1. **Draw a rectangle** on the map below (use the rectangle tool in the top-left)
+    2. Select your **date range** in the sidebar
+    3. Click **Load & Process Data** to analyze your area
+    """)
+    
+    # Initialize EE
     ee_ok, ee_err = initialize_ee()
     if not ee_ok:
         st.error(f"Earth Engine initialization failed: {ee_err}")
         st.stop()
-    st.success("✅ Earth Engine connected — service account authenticated")
-
-    # Session state defaults
-    defaults = dict(
-        ndvi_url=None, lst_url=None,
-        roi_geometry=None,  # Store ee.Geometry object
-        roi_geojson=None,   # Store GeoJSON for display
-        map_center=[20, 0], map_zoom=2,
-        ndvi_count=0, lst_count=0,
-        ds_ndvi=None, ds_lst=None,
-        ndvi_dates=[], ndvi_vals=[],
-        lst_dates=[], lst_vals=[],
-        active_layer="NDVI"
-    )
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-    # Handle polygon data from query parameters
-    query_params = st.query_params
     
-    if 'polygon_geojson' in query_params:
-        try:
-            polygon_geojson = json.loads(query_params['polygon_geojson'])
-            if polygon_geojson and 'coordinates' in polygon_geojson:
-                st.session_state.roi_geojson = polygon_geojson
-                # Create ee.Geometry from GeoJSON
-                st.session_state.roi_geometry = ee.Geometry(polygon_geojson)
-                st.success("✅ Polygon loaded from map!")
-                st.rerun()
-        except:
-            pass
+    st.sidebar.success("✅ Earth Engine Connected")
     
-    # ── Sidebar ───────────────────────────────────────────────────────────────
+    # Sidebar parameters
     with st.sidebar:
-        st.header("⚙️ Parameters")
-        
-        # Display current AOI status
-        if st.session_state.roi_geojson:
-            st.success("✅ AOI Polygon Defined")
-            with st.expander("View Current AOI"):
-                st.json(st.session_state.roi_geojson)
-        else:
-            st.warning("⚠️ No AOI defined yet. Draw a polygon in the Draw Map tab and click Apply Polygon!")
-        
-        st.subheader("📅 Date Range")
-        start_date = st.date_input("Start Date", value=datetime.date(2025, 1, 1),
-                                   min_value=datetime.date(2012, 1, 1),
-                                   max_value=datetime.date.today())
-        end_date = st.date_input("End Date", value=datetime.date(2025, 2, 1),
-                                 min_value=datetime.date(2012, 1, 1),
-                                 max_value=datetime.date.today())
-        if start_date >= end_date:
-            st.error("End date must be after start date.")
-            st.stop()
-
-        st.subheader("🗺️ Map Overlay")
-        active_layer = st.radio("Show on map", ["NDVI", "LST"])
-
-        st.subheader("🔬 Spatial Plot Scale")
-        scale_deg = st.slider("Resolution (degrees)", min_value=0.005, max_value=0.1,
-                              value=0.01, step=0.005, format="%.3f")
-        st.caption(f"≈ {scale_deg * 111:.1f} km/pixel  (smaller = more detail, slower)")
-
-        col_wrap = st.slider("Columns per row in grid plots", 2, 6, 4)
-
-        st.divider()
-        
-        # Only enable button if AOI is defined
-        run_btn = st.button("🚀 Load & Process Data", type="primary", 
-                           use_container_width=True,
-                           disabled=st.session_state.roi_geometry is None)
-        
-        if st.session_state.roi_geometry is None:
-            st.info("📝 Draw a polygon in the Draw Map tab and click Apply Polygon first!")
-
-        st.subheader("📦 Datasets")
-        st.markdown("""
-**NDVI:** `NASA/VIIRS/002/VNP09GA`
-Bands I1 & I2 · 500 m · (NIR−Red)/(NIR+Red)
-
-**LST:** `NASA/VIIRS/002/VNP21A1D`
-Band LST_1KM · 1 km · Kelvin
-        """)
-
-    # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab0, tab1, tab2, tab3, tab4 = st.tabs([
-        "🖊️ Draw Map",
-        "🗺️ Data Map",
-        "🌿 NDVI Spatial Plots",
-        "🌡️ LST Spatial Plots",
-        "📈 Time Series"
-    ])
-
-    # ── Process ───────────────────────────────────────────────────────────────
-    if run_btn and st.session_state.roi_geometry:
-        roi = st.session_state.roi_geometry
-        start_str = start_date.strftime('%Y-%m-%d')
-        end_str   = end_date.strftime('%Y-%m-%d')
-
-        st.session_state.active_layer = active_layer
-        
-        # Get bounding box for map centering
-        bounds = roi.bounds().getInfo()['coordinates'][0]
-        lons = [coord[0] for coord in bounds]
-        lats = [coord[1] for coord in bounds]
-        center_lon = (min(lons) + max(lons)) / 2
-        center_lat = (min(lats) + max(lats)) / 2
-        st.session_state.map_center = [center_lat, center_lon]
-        st.session_state.map_zoom = 8
-        
-        st.session_state.ds_ndvi = None
-        st.session_state.ds_lst = None
-
-        prog = st.progress(0, text="Fetching NDVI tile layer…")
-        try:
-            url, cnt = get_ndvi_tile_url(roi, start_str, end_str)
-            st.session_state.ndvi_url   = url
-            st.session_state.ndvi_count = cnt
-        except Exception as e:
-            st.warning(f"NDVI tile error: {e}")
-        prog.progress(20, text="Fetching LST tile layer…")
-
-        try:
-            url, cnt = get_lst_tile_url(roi, start_str, end_str)
-            st.session_state.lst_url   = url
-            st.session_state.lst_count = cnt
-        except Exception as e:
-            st.warning(f"LST tile error: {e}")
-        prog.progress(40, text="Loading NDVI xarray dataset (may take 30–60s)…")
-
-        try:
-            ds, _ = load_ndvi_xarray(roi, start_str, end_str, scale_deg)
-            # Force compute of a small preview to catch errors early
-            ds_loaded = ds.compute()
-            st.session_state.ds_ndvi = ds_loaded
-            dates, vals = compute_time_series(ds_loaded, 'ndvi')
-            st.session_state.ndvi_dates = dates
-            st.session_state.ndvi_vals  = vals
-        except Exception as e:
-            st.warning(f"NDVI xarray error: {e}")
-        prog.progress(70, text="Loading LST xarray dataset…")
-
-        try:
-            ds, _ = load_lst_xarray(roi, start_str, end_str, scale_deg)
-            ds_loaded = ds.compute()
-            st.session_state.ds_lst = ds_loaded
-            dates, vals = compute_time_series(ds_loaded, 'LST_1KM')
-            # Convert K → C
-            st.session_state.lst_dates = dates
-            st.session_state.lst_vals  = [v - 273.15 for v in vals]
-        except Exception as e:
-            st.warning(f"LST xarray error: {e}")
-        prog.progress(100, text="Done!")
-        st.success("✅ All data loaded — see tabs for results")
-        st.rerun()
-
-    # ── Tab 0: Draw Map ───────────────────────────────────────────────────────
-    with tab0:
-        st.subheader("🖊️ Draw Your Area of Interest")
-        st.info(
-            "1. Use the **polygon tool (⬟)** in the top-left toolbar to draw your area of interest.\n"
-            "2. After drawing, click **Apply Polygon** to save it for analysis.\n"
-            "3. Go to sidebar and select date range, then click **Load & Process Data**."
+        st.header("📅 Date Range")
+        start_date = st.date_input(
+            "Start Date",
+            value=datetime.date(2025, 1, 1),
+            min_value=datetime.date(2012, 1, 1),
+            max_value=datetime.date.today()
+        )
+        end_date = st.date_input(
+            "End Date",
+            value=datetime.date(2025, 2, 1),
+            min_value=datetime.date(2012, 1, 1),
+            max_value=datetime.date.today()
         )
         
-        # Center map on current ROI or default
-        if st.session_state.roi_geometry:
-            bounds = st.session_state.roi_geometry.bounds().getInfo()['coordinates'][0]
-            lons = [coord[0] for coord in bounds]
-            lats = [coord[1] for coord in bounds]
-            center_lon = (min(lons) + max(lons)) / 2
-            center_lat = (min(lats) + max(lats)) / 2
-            cx = center_lon
-            cy = center_lat
-            cz = 8
-        else:
-            cx = 0
-            cy = 20
-            cz = 2
+        st.divider()
         
-        render_draw_map(cy, cx, cz, roi_geometry=st.session_state.roi_geometry)
-
-    # ── Tab 1: Data Map ───────────────────────────────────────────────────────
-    with tab1:
-        st.subheader("🗺️ Interactive Data Map")
-        has_data = st.session_state.ndvi_url or st.session_state.lst_url
-        if not has_data:
-            st.info("Draw polygon in Draw Map tab, then click Load & Process Data.")
+        # Scale parameters
+        st.subheader("🔬 Resolution Settings")
+        ndvi_scale = st.slider(
+            "NDVI Scale (degrees)",
+            min_value=0.001,
+            max_value=0.01,
+            value=0.001,
+            step=0.001,
+            format="%.3f"
+        )
+        lst_scale = st.slider(
+            "LST Scale (degrees)",
+            min_value=0.001,
+            max_value=0.01,
+            value=0.005,
+            step=0.001,
+            format="%.3f"
+        )
         
-        if has_data and st.session_state.roi_geometry:
-            ca, cb = st.columns(2)
-            ca.metric("NDVI Images", st.session_state.ndvi_count)
-            cb.metric("LST Images",  st.session_state.lst_count)
+        st.divider()
         
-        if st.session_state.roi_geometry:
-            tile_url = (st.session_state.ndvi_url if active_layer == "NDVI"
-                        else st.session_state.lst_url)
-            
-            # Center map on ROI
-            bounds = st.session_state.roi_geometry.bounds().getInfo()['coordinates'][0]
-            lons = [coord[0] for coord in bounds]
-            lats = [coord[1] for coord in bounds]
-            center_lon = (min(lons) + max(lons)) / 2
-            center_lat = (min(lats) + max(lats)) / 2
-            cx = center_lon
-            cy = center_lat
-            cz = 8
-            
-            render_draw_map(cy, cx, cz,
-                            roi_geometry=st.session_state.roi_geometry,
-                            ee_tile_url=tile_url,
-                            layer_name=active_layer)
-            
-            if has_data:
-                if active_layer == "NDVI":
-                    st.markdown("**NDVI Legend:** 🔵 Blue (−0.2, bare/water) → ⬜ White → 🟡 Yellow → 🟢 Green → 🌲 Dark Green (0.8, dense vegetation)")
-                else:
-                    st.markdown("**LST Legend:** 🔵 Dark Blue (270 K / −3°C) → 🩵 Cyan → 🟡 Yellow → 🔴 Red → 🟤 Dark Red (320 K / 47°C)")
-
-    # ── Tab 2: NDVI Spatial Plots ─────────────────────────────────────────────
-    with tab2:
-        st.subheader("🌿 NDVI Spatial Maps — one panel per date (Colab-style)")
-        st.caption("Source: NASA/VIIRS/002/VNP09GA · Bands I1 & I2 · jet colormap")
-        if st.session_state.ds_ndvi is not None:
-            ds = st.session_state.ds_ndvi
-            n = len(ds.time)
-            st.info(f"Showing {n} time steps over the AOI. Each panel is one acquisition date.")
-            with st.spinner("Rendering spatial plots…"):
-                fig = plot_spatial_grid(
-                    ds, 'ndvi', cmap='jet',
-                    title='NDVI — NASA VIIRS (jet colormap, robust)',
-                    col_wrap=col_wrap
-                )
-            st.pyplot(fig)
-            plt.close(fig)
-        else:
-            st.info("No NDVI data loaded yet. Draw polygon in Draw Map tab then click Load & Process Data.")
-
-    # ── Tab 3: LST Spatial Plots ──────────────────────────────────────────────
-    with tab3:
-        st.subheader("🌡️ LST Spatial Maps — one panel per date (Colab-style)")
-        st.caption("Source: NASA/VIIRS/002/VNP21A1D · Band LST_1KM · hot_r colormap (Kelvin)")
-        if st.session_state.ds_lst is not None:
-            ds = st.session_state.ds_lst
-            n = len(ds.time)
-            st.info(f"Showing {n} time steps over the AOI.")
-            with st.spinner("Rendering spatial plots…"):
-                fig = plot_spatial_grid(
-                    ds, 'LST_1KM', cmap='hot_r',
-                    title='LST (Kelvin) — NASA VIIRS (hot_r colormap, robust)',
-                    col_wrap=col_wrap
-                )
-            st.pyplot(fig)
-            plt.close(fig)
-        else:
-            st.info("No LST data loaded yet. Draw polygon in Draw Map tab then click Load & Process Data.")
-
-    # ── Tab 4: Time Series ────────────────────────────────────────────────────
-    with tab4:
-        st.subheader("📈 Time Series — Mean over AOI")
-        col_n, col_l = st.columns(2)
-
-        with col_n:
-            st.markdown("**NDVI** (mean)")
-            if st.session_state.ndvi_dates:
-                v = st.session_state.ndvi_vals
-                st.metric("Mean NDVI", f"{sum(v)/len(v):.3f}")
-            fig = plot_time_series_line(
-                st.session_state.ndvi_dates, st.session_state.ndvi_vals,
-                "NDVI", "NDVI over Time", "#4CAF50"
-            )
-            st.pyplot(fig); plt.close(fig)
-            if st.session_state.ndvi_dates:
-                with st.expander("Raw table"):
-                    st.dataframe([{"Date": d, "NDVI": round(v, 4)}
-                                  for d, v in zip(st.session_state.ndvi_dates,
-                                                  st.session_state.ndvi_vals)],
-                                 use_container_width=True)
-
-        with col_l:
-            st.markdown("**LST** (mean, °C)")
-            if st.session_state.lst_dates:
-                v = st.session_state.lst_vals
-                st.metric("Mean LST", f"{sum(v)/len(v):.1f}°C")
-            fig = plot_time_series_line(
-                st.session_state.lst_dates, st.session_state.lst_vals,
-                "Temperature (°C)", "LST over Time", "#FF6B35"
-            )
-            st.pyplot(fig); plt.close(fig)
-            if st.session_state.lst_dates:
-                with st.expander("Raw table"):
-                    st.dataframe([{"Date": d, "LST (°C)": round(v, 2)}
-                                  for d, v in zip(st.session_state.lst_dates,
-                                                  st.session_state.lst_vals)],
-                                 use_container_width=True)
-
-    with st.expander("ℹ️ About"):
+        load_button = st.button("🚀 Load & Process Data", type="primary", use_container_width=True)
+        
+        st.divider()
         st.markdown("""
-### GEE NDVI & LST Viewer
-Connects to Google Earth Engine via service account `citric-hawk-457513-i6`.
-
-**Workflow:**
-1. **Draw Map** — Draw a polygon on the map using the polygon tool (⬟)
-2. **Apply Polygon** — Click "Apply Polygon" to save your AOI
-3. **Load Data** — Select date range and click "Load & Process Data"
-
-**Tabs:**
-- **Draw Map** — draw polygon to define your area of interest  
-- **Data Map** — interactive map with NDVI or LST overlay from EE tile server  
-- **NDVI Spatial Plots** — grid of spatial NDVI maps per time step  
-- **LST Spatial Plots** — same for land surface temperature  
-- **Time Series** — line charts of spatial mean NDVI and LST over time  
-
-**Note:** All analysis is performed only on the polygon you draw. No default geometry is used.
+        **📊 Data Sources:**
+        - **NDVI:** NASA/VIIRS/002/VNP09GA
+        - **LST:** NASA/VIIRS/002/VNP21A1D
         """)
+    
+    # Create tabs
+    tab1, tab2, tab3 = st.tabs(["🗺️ Draw & Select Area", "🌿 NDVI Analysis", "🌡️ LST Analysis"])
+    
+    with tab1:
+        st.subheader("Draw Your Area of Interest")
+        st.info("🔽 Use the rectangle tool (□) in the top-left corner of the map to draw your area")
+        
+        # Create and display map
+        m = create_map()
+        
+        # Store drawn features in session state
+        if 'last_draw' not in st.session_state:
+            st.session_state.last_draw = None
+        
+        # Display the map and capture drawing
+        output = st_folium(
+            m,
+            width=900,
+            height=500,
+            key="draw_map"
+        )
+        
+        # Check if a rectangle was drawn
+        if output and 'last_active_drawing' in output:
+            last_draw = output['last_active_drawing']
+            if last_draw:
+                st.session_state.last_draw = last_draw
+                st.success("✅ Rectangle drawn! Click 'Load & Process Data' in the sidebar to analyze.")
+                
+                # Display the coordinates
+                if 'geometry' in last_draw:
+                    coords = last_draw['geometry']['coordinates'][0]
+                    lons = [c[0] for c in coords]
+                    lats = [c[1] for c in coords]
+                    
+                    st.write("**Your Area of Interest:**")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"Longitude: {min(lons):.4f} to {max(lons):.4f}")
+                    with col2:
+                        st.write(f"Latitude: {min(lats):.4f} to {max(lats):.4f}")
+        
+        elif st.session_state.last_draw is None:
+            st.info("ℹ️ No rectangle drawn yet. Draw one on the map to begin.")
+        else:
+            st.info("ℹ️ Use the rectangle tool to draw your area of interest")
+    
+    # Process data when button is clicked
+    if load_button:
+        if st.session_state.last_draw is None:
+            st.error("❌ Please draw a rectangle on the map first!")
+        else:
+            with st.spinner("Loading data from Earth Engine..."):
+                # Get ROI from drawing
+                geojson = st.session_state.last_draw['geometry']
+                
+                # Convert GeoJSON to ee.Geometry
+                if geojson['type'] == 'Polygon':
+                    coords = geojson['coordinates'][0]
+                    # Create ee.Geometry from coordinates
+                    roi = ee.Geometry.Polygon(coords)
+                    
+                    start_str = start_date.strftime('%Y-%m-%d')
+                    end_str = end_date.strftime('%Y-%m-%d')
+                    
+                    # Status bar
+                    progress_text = st.empty()
+                    
+                    # Load NDVI
+                    progress_text.text("Loading NDVI data...")
+                    ndvi_ds, ndvi_count = get_ndvi_data(roi, start_str, end_str, ndvi_scale)
+                    
+                    # Load LST
+                    progress_text.text("Loading LST data...")
+                    lst_ds, lst_count = get_lst_data(roi, start_str, end_str, lst_scale)
+                    
+                    progress_text.text("Processing complete!")
+                    progress_text.empty()
+                    
+                    # Store in session state
+                    st.session_state.ndvi_ds = ndvi_ds
+                    st.session_state.ndvi_count = ndvi_count
+                    st.session_state.lst_ds = lst_ds
+                    st.session_state.lst_count = lst_count
+                    st.session_state.roi = roi
+                    
+                    st.success(f"✅ Data loaded! Found {ndvi_count} NDVI images and {lst_count} LST images")
+                else:
+                    st.error("Please draw a rectangle (not another shape)")
+    
+    # Display NDVI analysis
+    with tab2:
+        st.subheader("🌿 NDVI Analysis")
+        
+        if 'ndvi_ds' in st.session_state and st.session_state.ndvi_ds is not None:
+            ds = st.session_state.ndvi_ds
+            count = st.session_state.ndvi_count
+            
+            st.metric("Number of NDVI Images", count)
+            
+            # Show data shape
+            st.write(f"**Data Dimensions:** Time: {len(ds.time)} | Lat: {len(ds.lat)} | Lon: {len(ds.lon)}")
+            
+            # Plot time series grid
+            st.write("### NDVI Time Series Plots")
+            fig = plot_ndvi_grid(ds)
+            if fig:
+                st.pyplot(fig)
+                plt.close(fig)
+            
+            # Show mean NDVI over time
+            st.write("### Mean NDVI Over Time")
+            mean_ndvi = ds.ndvi.mean(dim=['lat', 'lon'])
+            
+            fig, ax = plt.subplots(figsize=(10, 4))
+            dates = [str(t)[:10] for t in ds.time.values]
+            ax.plot(dates, mean_ndvi.values, 'o-', color='green', linewidth=2, markersize=6)
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Mean NDVI')
+            ax.set_title('NDVI Time Series - Area Average')
+            ax.grid(True, alpha=0.3)
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+            
+            # Raw data table
+            with st.expander("View Raw Data"):
+                df = mean_ndvi.to_dataframe().reset_index()
+                df['time'] = df['time'].astype(str).str[:10]
+                st.dataframe(df, use_container_width=True)
+                
+        else:
+            st.info("No NDVI data loaded yet. Draw a rectangle and click 'Load & Process Data'.")
+    
+    # Display LST analysis
+    with tab3:
+        st.subheader("🌡️ LST Analysis")
+        
+        if 'lst_ds' in st.session_state and st.session_state.lst_ds is not None:
+            ds = st.session_state.lst_ds
+            count = st.session_state.lst_count
+            
+            st.metric("Number of LST Images", count)
+            
+            # Show data shape
+            st.write(f"**Data Dimensions:** Time: {len(ds.time)} | Lat: {len(ds.lat)} | Lon: {len(ds.lon)}")
+            
+            # Plot time series grid
+            st.write("### LST Time Series Plots")
+            fig = plot_lst_grid(ds)
+            if fig:
+                st.pyplot(fig)
+                plt.close(fig)
+            
+            # Show mean LST over time (convert to Celsius)
+            st.write("### Mean LST Over Time (Celsius)")
+            mean_lst = ds.LST_1KM.mean(dim=['lat', 'lon'])
+            mean_lst_celsius = mean_lst - 273.15
+            
+            fig, ax = plt.subplots(figsize=(10, 4))
+            dates = [str(t)[:10] for t in ds.time.values]
+            ax.plot(dates, mean_lst_celsius.values, 'o-', color='red', linewidth=2, markersize=6)
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Mean LST (°C)')
+            ax.set_title('LST Time Series - Area Average')
+            ax.grid(True, alpha=0.3)
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+            
+            # Raw data table
+            with st.expander("View Raw Data"):
+                df = mean_lst_celsius.to_dataframe().reset_index()
+                df['time'] = df['time'].astype(str).str[:10]
+                df['LST_1KM'] = df['LST_1KM'] - 273.15  # Convert to Celsius
+                df.columns = ['time', 'Mean LST (°C)']
+                st.dataframe(df, use_container_width=True)
+                
+        else:
+            st.info("No LST data loaded yet. Draw a rectangle and click 'Load & Process Data'.")
 
 
 if __name__ == "__main__":
