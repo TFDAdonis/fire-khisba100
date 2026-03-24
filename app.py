@@ -98,15 +98,48 @@ DRAW_MAP_HTML = """
     }
     #coords-panel b { color:#4CAF50; }
     #coord-values {
-      display:grid; grid-template-columns:1fr 1fr;
-      gap:8px; margin-top:8px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
     }
     .coord-box {
-      background:#0e1117; border:1px solid #444; border-radius:6px;
-      padding:6px 10px; font-size:12px; color:#ccc;
+      background:#0e1117; 
+      border: 1px solid #4CAF50; 
+      border-radius: 8px;
+      padding: 10px 12px; 
+      font-size: 13px; 
+      color: #ccc;
+      text-align: center;
     }
-    .coord-box span { color:#fff; font-weight:bold; font-size:14px; display:block; }
-    #hint { color:#aaa; font-size:12px; margin-top:6px; }
+    .coord-box span { 
+      color: #4CAF50; 
+      font-weight: bold; 
+      font-size: 16px; 
+      display: block;
+      margin-bottom: 5px;
+    }
+    .coord-value {
+      color: #fff;
+      font-size: 18px;
+      font-weight: bold;
+      font-family: monospace;
+      letter-spacing: 0.5px;
+    }
+    .coord-label {
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
+    #hint { 
+      color: #FFA500; 
+      font-size: 12px; 
+      margin-top: 12px;
+      padding: 8px;
+      background: rgba(76, 175, 80, 0.1);
+      border-radius: 6px;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -114,12 +147,28 @@ DRAW_MAP_HTML = """
   <div id="coords-panel">
     <b>📐 Draw a rectangle on the map to get coordinates</b>
     <div id="coord-values">
-      <div class="coord-box">Min Lon (West)<span id="min-lon">—</span></div>
-      <div class="coord-box">Max Lon (East)<span id="max-lon">—</span></div>
-      <div class="coord-box">Min Lat (South)<span id="min-lat">—</span></div>
-      <div class="coord-box">Max Lat (North)<span id="max-lat">—</span></div>
+      <div class="coord-box">
+        <span>🌍 Min Lon (West)</span>
+        <div class="coord-value" id="min-lon">—</div>
+        <div class="coord-label">Longitude left boundary</div>
+      </div>
+      <div class="coord-box">
+        <span>🌍 Max Lon (East)</span>
+        <div class="coord-value" id="max-lon">—</div>
+        <div class="coord-label">Longitude right boundary</div>
+      </div>
+      <div class="coord-box">
+        <span>📍 Min Lat (South)</span>
+        <div class="coord-value" id="min-lat">—</div>
+        <div class="coord-label">Latitude bottom boundary</div>
+      </div>
+      <div class="coord-box">
+        <span>📍 Max Lat (North)</span>
+        <div class="coord-value" id="max-lat">—</div>
+        <div class="coord-label">Latitude top boundary</div>
+      </div>
     </div>
-    <div id="hint">Use the ▭ rectangle tool in the top-left toolbar, then copy the values above into the sidebar.</div>
+    <div id="hint">✏️ Use the ▭ rectangle tool in the top-left toolbar, then copy the values above into the sidebar.</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -167,8 +216,18 @@ DRAW_MAP_HTML = """
       document.getElementById('max-lon').textContent = maxLon;
       document.getElementById('min-lat').textContent = minLat;
       document.getElementById('max-lat').textContent = maxLat;
-      document.getElementById('hint').textContent =
-        '✅ Copy these values into the sidebar AOI inputs, then click Load & Process Data.';
+      document.getElementById('hint').innerHTML = 
+        '✅ <strong>Coordinates captured!</strong> Copy these four values into the sidebar AOI inputs, then click Load & Process Data.';
+      
+      // Add a visual feedback by highlighting the boxes briefly
+      var boxes = document.getElementsByClassName('coord-box');
+      for(var i = 0; i < boxes.length; i++) {
+        boxes[i].style.borderColor = '#4CAF50';
+        boxes[i].style.transition = 'border-color 0.3s';
+        setTimeout(function(box) {
+          box.style.borderColor = '#4CAF50';
+        }, 300, boxes[i]);
+      }
     });
   </script>
 </body>
@@ -201,7 +260,7 @@ def render_draw_map(center_lat, center_lon, zoom, roi_coords=None, ee_tile_url=N
             .replace("EXISTING_RECT", existing)
             .replace("EE_TILES", ee_tiles))
 
-    components.html(html, height=510, scrolling=False)
+    components.html(html, height=560, scrolling=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
