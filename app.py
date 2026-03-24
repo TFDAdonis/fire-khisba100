@@ -78,7 +78,7 @@ e5aU1RW6tlG8nzHHwK2FeyI=
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Map with draw controls - returns polygon geometry
+# Map with draw controls - sends polygon coordinates to Streamlit
 # ─────────────────────────────────────────────────────────────────────────────
 DRAW_MAP_HTML = """
 <!DOCTYPE html>
@@ -110,6 +110,8 @@ DRAW_MAP_HTML = """
     }
     button:hover { background:#45a049; }
     .coord-row { font-family: monospace; font-size: 11px; margin: 4px 0; }
+    .status-success { color: #4CAF50; margin-top: 8px; font-size: 12px; }
+    .status-warning { color: #ffaa44; margin-top: 8px; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -118,14 +120,14 @@ DRAW_MAP_HTML = """
     <b>✏️ Draw a polygon on the map</b>
     <div class="info-text">
       Use the <strong>polygon (⬟) tool</strong> in the top-left toolbar. Draw a polygon to define your area of interest.
-      After drawing, click <strong>"Send to App"</strong> to use this polygon for analysis.
+      After drawing, click <strong>"Process This Polygon"</strong> to analyze it.
     </div>
     <div id="polygon-info" style="display:none;" class="selected-polygon">
-      <div>✅ Polygon selected! Click "Send to App" to use this area.</div>
+      <div>✅ Polygon selected! Click "Process This Polygon" to analyze this area.</div>
       <div id="coords-list" class="coord-row"></div>
     </div>
-    <button id="send-btn" style="display:none;">📤 Send to App & Process Data</button>
-    <div id="status" class="info-text" style="margin-top: 10px; color: #ffaa44;"></div>
+    <button id="process-btn" style="display:none;">🔍 Process This Polygon</button>
+    <div id="status"></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -186,8 +188,8 @@ DRAW_MAP_HTML = """
       
       document.getElementById('coords-list').innerHTML = coordsHtml;
       document.getElementById('polygon-info').style.display = 'block';
-      document.getElementById('send-btn').style.display = 'block';
-      document.getElementById('status').innerHTML = 'Polygon drawn. Click "Send to App" to analyze this area.';
+      document.getElementById('process-btn').style.display = 'block';
+      document.getElementById('status').innerHTML = '<div class="status-success">✅ Polygon drawn. Click "Process This Polygon" to analyze.</div>';
     }
 
     map.on(L.Draw.Event.CREATED, function(e) {
@@ -205,15 +207,15 @@ DRAW_MAP_HTML = """
       });
     });
 
-    document.getElementById('send-btn').onclick = function() {
+    document.getElementById('process-btn').onclick = function() {
       if (currentCoords) {
         var message = {
-          type: 'polygon',
+          type: 'polygon_ready',
           coordinates: currentCoords
         };
         window.parent.postMessage(message, '*');
-        document.getElementById('status').innerHTML = '✅ Polygon sent to app! Loading data...';
-        document.getElementById('send-btn').disabled = true;
+        document.getElementById('status').innerHTML = '<div class="status-success">✅ Polygon sent to app! Loading data...</div>';
+        document.getElementById('process-btn').disabled = true;
       }
     };
   </script>
@@ -229,7 +231,7 @@ def render_draw_map(center_lat, center_lon, zoom):
             .replace("INIT_LON", str(center_lon))
             .replace("INIT_ZOOM", str(zoom)))
     
-    components.html(html, height=580, scrolling=False)
+    return components.html(html, height=580, scrolling=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -424,9 +426,7 @@ def plot_time_series_line(dates, values, ylabel, title, color):
 def main():
     st.title("🌍 Google Earth Engine — NDVI & LST Viewer")
     st.markdown(
-        "**Step 1:** Use the **Draw Polygon** tab to draw a polygon on the map.  \n"
-        "**Step 2:** Click **Send to App & Process Data** after drawing.  \n"
-        "**Step 3:** Select dates in the sidebar and the app will automatically process your polygon."
+        "**Draw a polygon on the map → Click 'Process This Polygon' → Analyze your area of interest!**"
     )
 
     ee_ok, ee_err = initialize_ee()
@@ -445,7 +445,8 @@ def main():
         ndvi_dates=[], ndvi_vals=[],
         lst_dates=[], lst_vals=[],
         active_layer="NDVI",
-        polygon_drawn=False
+        polygon_drawn=False,
+        polygon_coords=None
     )
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -487,80 +488,84 @@ Bands I1 & I2 · 500 m · (NIR−Red)/(NIR+Red)
 Band LST_1KM · 1 km · Kelvin
         """)
         
-        st.subheader("📐 Polygon Coordinates (Optional)")
-        st.markdown("Manually enter polygon coordinates (lon, lat format, one per line):")
-        polygon_coords_text = st.text_area(
-            "Polygon coordinates",
-            placeholder="[-10.0, 4.0]\n[2.0, 4.0]\n[2.0, 12.0]\n[-10.0, 12.0]",
-            height=150
-        )
+        # Display polygon info if available
+        if st.session_state.polygon_coords:
+            st.subheader("📍 Current Polygon")
+            st.success(f"✅ Polygon loaded with {len(st.session_state.polygon_coords)} points")
+            if st.button("🔄 Re-process Current Polygon"):
+                with st.spinner("Processing polygon..."):
+                    process_polygon(st.session_state.polygon_coords, start_date, end_date, scale_deg)
+                    st.rerun()
+
+    # Function to process polygon coordinates
+    def process_polygon(coords_list, start_date, end_date, scale_deg):
+        """Process polygon coordinates and load data"""
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
         
-        if polygon_coords_text:
-            try:
-                # Parse coordinates
-                lines = polygon_coords_text.strip().split('\n')
-                coords = []
-                for line in lines:
-                    line = line.strip().strip('[]')
-                    parts = line.split(',')
-                    if len(parts) == 2:
-                        lon = float(parts[0].strip())
-                        lat = float(parts[1].strip())
-                        coords.append([lon, lat])
-                
-                if len(coords) >= 3:
-                    # Create polygon geometry
-                    roi_geometry = ee.Geometry.Polygon(coords)
-                    st.session_state.roi_geometry = roi_geometry
-                    st.success(f"✅ Polygon created with {len(coords)} points")
-                    
-                    if st.button("Load Data for This Polygon"):
-                        with st.spinner("Loading data..."):
-                            start_str = start_date.strftime('%Y-%m-%d')
-                            end_str = end_date.strftime('%Y-%m-%d')
-                            
-                            prog = st.progress(0, text="Fetching NDVI tile layer…")
-                            try:
-                                url, cnt = get_ndvi_tile_url(roi_geometry, start_str, end_str)
-                                st.session_state.ndvi_url = url
-                                st.session_state.ndvi_count = cnt
-                            except Exception as e:
-                                st.warning(f"NDVI tile error: {e}")
-                            prog.progress(20, text="Fetching LST tile layer…")
+        # Create EE polygon geometry
+        roi_geometry = ee.Geometry.Polygon(coords_list)
+        st.session_state.roi_geometry = roi_geometry
+        
+        progress_text = st.empty()
+        
+        try:
+            progress_text.info("🔄 Loading NDVI tile layer...")
+            url, cnt = get_ndvi_tile_url(roi_geometry, start_str, end_str)
+            st.session_state.ndvi_url = url
+            st.session_state.ndvi_count = cnt
+        except Exception as e:
+            st.warning(f"NDVI tile error: {e}")
+        
+        try:
+            progress_text.info("🔄 Loading LST tile layer...")
+            url, cnt = get_lst_tile_url(roi_geometry, start_str, end_str)
+            st.session_state.lst_url = url
+            st.session_state.lst_count = cnt
+        except Exception as e:
+            st.warning(f"LST tile error: {e}")
+        
+        try:
+            progress_text.info("🔄 Loading NDVI xarray dataset (this may take 30-60 seconds)...")
+            ds, _ = load_ndvi_xarray(roi_geometry, start_str, end_str, scale_deg)
+            ds_loaded = ds.compute()
+            st.session_state.ds_ndvi = ds_loaded
+            dates, vals = compute_time_series(ds_loaded, 'ndvi')
+            st.session_state.ndvi_dates = dates
+            st.session_state.ndvi_vals = vals
+        except Exception as e:
+            st.warning(f"NDVI xarray error: {e}")
+        
+        try:
+            progress_text.info("🔄 Loading LST xarray dataset...")
+            ds, _ = load_lst_xarray(roi_geometry, start_str, end_str, scale_deg)
+            ds_loaded = ds.compute()
+            st.session_state.ds_lst = ds_loaded
+            dates, vals = compute_time_series(ds_loaded, 'LST_1KM')
+            st.session_state.lst_dates = dates
+            st.session_state.lst_vals = [v - 273.15 for v in vals]
+        except Exception as e:
+            st.warning(f"LST xarray error: {e}")
+        
+        progress_text.success("✅ All data loaded successfully!")
 
-                            try:
-                                url, cnt = get_lst_tile_url(roi_geometry, start_str, end_str)
-                                st.session_state.lst_url = url
-                                st.session_state.lst_count = cnt
-                            except Exception as e:
-                                st.warning(f"LST tile error: {e}")
-                            prog.progress(40, text="Loading NDVI xarray dataset…")
-
-                            try:
-                                ds, _ = load_ndvi_xarray(roi_geometry, start_str, end_str, scale_deg)
-                                ds_loaded = ds.compute()
-                                st.session_state.ds_ndvi = ds_loaded
-                                dates, vals = compute_time_series(ds_loaded, 'ndvi')
-                                st.session_state.ndvi_dates = dates
-                                st.session_state.ndvi_vals = vals
-                            except Exception as e:
-                                st.warning(f"NDVI xarray error: {e}")
-                            prog.progress(70, text="Loading LST xarray dataset…")
-
-                            try:
-                                ds, _ = load_lst_xarray(roi_geometry, start_str, end_str, scale_deg)
-                                ds_loaded = ds.compute()
-                                st.session_state.ds_lst = ds_loaded
-                                dates, vals = compute_time_series(ds_loaded, 'LST_1KM')
-                                st.session_state.lst_dates = dates
-                                st.session_state.lst_vals = [v - 273.15 for v in vals]
-                            except Exception as e:
-                                st.warning(f"LST xarray error: {e}")
-                            prog.progress(100, text="Done!")
-                            st.success("✅ Data loaded successfully!")
-                            st.rerun()
-            except Exception as e:
-                st.error(f"Error parsing coordinates: {e}")
+    # JavaScript listener for polygon messages
+    polygon_html = """
+    <script>
+    window.addEventListener('message', function(event) {
+        if (event.data.type === 'polygon_ready') {
+            var coords = event.data.coordinates;
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.id = 'polygon_coords';
+            input.value = JSON.stringify(coords);
+            document.body.appendChild(input);
+            input.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+    });
+    </script>
+    """
+    components.html(polygon_html, height=0)
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab0, tab1, tab2, tab3, tab4 = st.tabs([
@@ -573,118 +578,108 @@ Band LST_1KM · 1 km · Kelvin
 
     # ── Tab 0: Draw Polygon ───────────────────────────────────────────────────
     with tab0:
-        st.subheader("✏️ Draw Your Area of Interest (Polygon)")
+        st.subheader("✏️ Draw Your Area of Interest")
         st.info(
-            "**Instructions:**\n"
-            "1. Use the **polygon (⬟) tool** in the top-left of the map below.\n"
-            "2. Draw a polygon around your area of interest.\n"
-            "3. Click **'Send to App & Process Data'** button that appears after drawing.\n"
-            "4. The coordinates will be saved. Then use the sidebar to load data."
+            "**Instructions:**\n\n"
+            "1️⃣ Use the **polygon (⬟) tool** in the top-left toolbar\n\n"
+            "2️⃣ Draw a polygon around your area of interest\n\n"
+            "3️⃣ Click **'Process This Polygon'** button that appears after drawing\n\n"
+            "4️⃣ Wait for data to load, then explore results in other tabs!"
         )
         
-        # Center map
+        # Render the draw map
         cx = st.session_state.map_center[1]
         cy = st.session_state.map_center[0]
         cz = st.session_state.map_zoom
         render_draw_map(cy, cx, cz)
+        
+        # Handle polygon from JavaScript
+        polygon_data = st.query_params.get("polygon")
+        if polygon_data:
+            try:
+                coords = json.loads(polygon_data)
+                st.session_state.polygon_coords = coords
+                process_polygon(coords, start_date, end_date, scale_deg)
+                st.rerun()
+            except:
+                pass
 
     # ── Tab 1: Data Map ───────────────────────────────────────────────────────
     with tab1:
         st.subheader("🗺️ Interactive Data Map")
-        has_data = st.session_state.ndvi_url or st.session_state.lst_url
-        if not has_data:
-            st.info("Draw a polygon and enter coordinates in the sidebar, then click 'Load Data for This Polygon'.")
         
-        if has_data and st.session_state.roi_geometry:
+        if st.session_state.roi_geometry is None:
+            st.info("📌 Draw a polygon in the 'Draw Polygon' tab and click 'Process This Polygon' to see data here.")
+        else:
             ca, cb = st.columns(2)
             ca.metric("NDVI Images", st.session_state.ndvi_count)
             cb.metric("LST Images", st.session_state.lst_count)
-            st.caption("✅ Data loaded for your polygon")
-        
-        # Show a folium map with the polygon
-        if st.session_state.roi_geometry:
-            st.subheader("Your Selected Area")
-            # Create a folium map to show the polygon
+            
+            # Show polygon on map
             try:
-                m = folium.Map(location=[0, 0], zoom_start=2)
+                m = folium.Map(location=[st.session_state.map_center[0], st.session_state.map_center[1]], 
+                              zoom_start=6)
                 
-                # Get polygon coordinates
                 coords = st.session_state.roi_geometry.coordinates().getInfo()
                 if coords:
-                    # Extract first ring of polygon
                     ring = coords[0]
-                    # Add polygon to map
                     folium.Polygon(
                         locations=[[lat, lon] for lon, lat in ring],
                         color='green',
-                        weight=2,
+                        weight=3,
                         fill=True,
-                        fill_opacity=0.2,
-                        popup='AOI'
+                        fill_opacity=0.3,
+                        popup='Your AOI'
                     ).add_to(m)
                     
-                    # Center map on polygon
-                    lats = [lat for lon, lat in ring]
-                    lons = [lon for lon, lat in ring]
-                    center_lat = sum(lats) / len(lats)
-                    center_lon = sum(lons) / len(lons)
-                    m.location = [center_lat, center_lon]
-                    m.zoom_start = 8
-                    
-                    # Display map
                     from streamlit_folium import folium_static
                     folium_static(m, width=700, height=400)
             except Exception as e:
-                st.info(f"Polygon geometry loaded but cannot display map: {e}")
-        
-        # Tile layer info
-        if has_data:
+                st.info(f"Polygon loaded but cannot display map: {e}")
+            
             if active_layer == "NDVI":
-                st.markdown("**NDVI Legend:** 🔵 Blue (−0.2, bare/water) → ⬜ White → 🟡 Yellow → 🟢 Green → 🌲 Dark Green (0.8, dense vegetation)")
+                st.markdown("**NDVI Legend:** 🔵 Blue (−0.2) → 🟢 Green (0.8) — Dense vegetation")
             else:
-                st.markdown("**LST Legend:** 🔵 Dark Blue (270 K / −3°C) → 🩵 Cyan → 🟡 Yellow → 🔴 Red → 🟤 Dark Red (320 K / 47°C)")
+                st.markdown("**LST Legend:** 🔵 Dark Blue (270K) → 🔴 Red (320K) — Temperature")
 
     # ── Tab 2: NDVI Spatial Plots ─────────────────────────────────────────────
     with tab2:
-        st.subheader("🌿 NDVI Spatial Maps — one panel per date")
-        st.caption("Source: NASA/VIIRS/002/VNP09GA · Bands I1 & I2 · jet colormap")
+        st.subheader("🌿 NDVI Spatial Maps")
         if st.session_state.ds_ndvi is not None:
             ds = st.session_state.ds_ndvi
-            n = len(ds.time)
-            st.info(f"Showing {n} time steps over the polygon. Each panel is one acquisition date.")
-            with st.spinner("Rendering spatial plots…"):
+            st.info(f"Showing {len(ds.time)} time steps over your polygon")
+            with st.spinner("Rendering spatial plots..."):
                 fig = plot_spatial_grid(
                     ds, 'ndvi', cmap='jet',
-                    title='NDVI — NASA VIIRS (jet colormap, robust)',
+                    title='NDVI — NASA VIIRS',
                     col_wrap=col_wrap
                 )
             st.pyplot(fig)
             plt.close(fig)
         else:
-            st.info("No NDVI data loaded yet. Draw a polygon and load data using the sidebar.")
+            st.info("No NDVI data loaded. Draw a polygon and click 'Process This Polygon'.")
 
     # ── Tab 3: LST Spatial Plots ──────────────────────────────────────────────
     with tab3:
-        st.subheader("🌡️ LST Spatial Maps — one panel per date")
-        st.caption("Source: NASA/VIIRS/002/VNP21A1D · Band LST_1KM · hot_r colormap (Kelvin)")
+        st.subheader("🌡️ LST Spatial Maps")
         if st.session_state.ds_lst is not None:
             ds = st.session_state.ds_lst
-            n = len(ds.time)
-            st.info(f"Showing {n} time steps over the polygon.")
-            with st.spinner("Rendering spatial plots…"):
+            st.info(f"Showing {len(ds.time)} time steps over your polygon")
+            with st.spinner("Rendering spatial plots..."):
                 fig = plot_spatial_grid(
                     ds, 'LST_1KM', cmap='hot_r',
-                    title='LST (Kelvin) — NASA VIIRS (hot_r colormap, robust)',
+                    title='LST (Kelvin) — NASA VIIRS',
                     col_wrap=col_wrap
                 )
             st.pyplot(fig)
             plt.close(fig)
         else:
-            st.info("No LST data loaded yet. Draw a polygon and load data using the sidebar.")
+            st.info("No LST data loaded. Draw a polygon and click 'Process This Polygon'.")
 
     # ── Tab 4: Time Series ────────────────────────────────────────────────────
     with tab4:
         st.subheader("📈 Time Series — Mean over Polygon")
+        
         col_n, col_l = st.columns(2)
 
         with col_n:
@@ -698,12 +693,6 @@ Band LST_1KM · 1 km · Kelvin
             )
             st.pyplot(fig)
             plt.close(fig)
-            if st.session_state.ndvi_dates:
-                with st.expander("Raw table"):
-                    st.dataframe([{"Date": d, "NDVI": round(v, 4)}
-                                  for d, v in zip(st.session_state.ndvi_dates,
-                                                  st.session_state.ndvi_vals)],
-                                 use_container_width=True)
 
         with col_l:
             st.markdown("**LST** (mean, °C)")
@@ -716,31 +705,21 @@ Band LST_1KM · 1 km · Kelvin
             )
             st.pyplot(fig)
             plt.close(fig)
-            if st.session_state.lst_dates:
-                with st.expander("Raw table"):
-                    st.dataframe([{"Date": d, "LST (°C)": round(v, 2)}
-                                  for d, v in zip(st.session_state.lst_dates,
-                                                  st.session_state.lst_vals)],
-                                 use_container_width=True)
 
     with st.expander("ℹ️ About"):
         st.markdown("""
-### GEE NDVI & LST Viewer - Polygon Mode
-This app allows you to draw **any polygon** as your area of interest, not just rectangles!
+### How to Use:
 
-**How it works:**
-1. **Draw Polygon Tab** - Draw any polygon on the map using the polygon tool
-2. Copy the coordinates or use them directly
-3. Paste coordinates in the sidebar or use manual entry
-4. Click "Load Data for This Polygon" to process
-5. View results in the other tabs
+1. **Draw Polygon Tab**: Use the polygon tool (⬟) to draw your area of interest on the map
+2. **Click "Process This Polygon"**: The app will automatically load NDVI and LST data for your polygon
+3. **Explore Results**: 
+   - **Data Map**: See your polygon and data overlay
+   - **Spatial Plots**: View NDVI/LST maps for each date
+   - **Time Series**: See trends over time
 
-**Features:**
-- **NDVI** from NASA/VIIRS/002/VNP09GA (500m resolution)
-- **LST** from NASA/VIIRS/002/VNP21A1D (1km resolution)
-- **Spatial plots** per time step (like Colab's xr.plot)
-- **Time series** of mean values over your polygon
-- **Interactive maps** with data overlays
+**Data Sources:**
+- NDVI: NASA VIIRS VNP09GA (500m resolution)
+- LST: NASA VIIRS VNP21A1D (1km resolution)
         """)
 
 
