@@ -78,7 +78,7 @@ e5aU1RW6tlG8nzHHwK2FeyI=
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Map with draw controls - sends polygon coordinates to Streamlit
+# Map with draw controls - Improved communication with Streamlit
 # ─────────────────────────────────────────────────────────────────────────────
 DRAW_MAP_HTML = """
 <!DOCTYPE html>
@@ -120,7 +120,7 @@ DRAW_MAP_HTML = """
     <b>✏️ Draw a polygon on the map</b>
     <div class="info-text">
       Use the <strong>polygon (⬟) tool</strong> in the top-left toolbar. Draw a polygon to define your area of interest.
-      After drawing, the coordinates will be saved. Then go to the sidebar and click <strong>"Start Analysis"</strong>.
+      After drawing, the coordinates will be automatically saved. Then go to the sidebar and click <strong>"Start Analysis"</strong>.
     </div>
     <div id="polygon-info" style="display:none;" class="selected-polygon">
       <div>✅ Polygon drawn! Coordinates saved.</div>
@@ -175,6 +175,23 @@ DRAW_MAP_HTML = """
       return coords;
     }
 
+    function sendCoordinatesToStreamlit(coords) {
+      // Store in localStorage
+      localStorage.setItem('drawn_polygon_coords', JSON.stringify(coords));
+      localStorage.setItem('polygon_timestamp', Date.now().toString());
+      
+      // Also send via postMessage
+      var message = {
+        type: 'polygon_drawn',
+        coordinates: coords,
+        timestamp: Date.now()
+      };
+      window.parent.postMessage(message, '*');
+      
+      // Trigger a URL hash change to force Streamlit to detect change
+      window.location.hash = 'polygon_' + Date.now();
+    }
+
     function updatePolygonInfo(layer) {
       var latlngs = layer.getLatLngs()[0];
       var coords = formatCoords(latlngs);
@@ -190,12 +207,8 @@ DRAW_MAP_HTML = """
       document.getElementById('polygon-info').style.display = 'block';
       document.getElementById('status').innerHTML = '<div class="status-success">✅ Polygon drawn! Coordinates saved to app.</div>';
       
-      // Send coordinates to Streamlit
-      var message = {
-        type: 'polygon_drawn',
-        coordinates: currentCoords
-      };
-      window.parent.postMessage(message, '*');
+      // Send to Streamlit
+      sendCoordinatesToStreamlit(coords);
     }
 
     map.on(L.Draw.Event.CREATED, function(e) {
@@ -212,6 +225,20 @@ DRAW_MAP_HTML = """
         updatePolygonInfo(layer);
       });
     });
+    
+    // Check for existing polygon on load
+    var existingCoords = localStorage.getItem('drawn_polygon_coords');
+    if (existingCoords) {
+      var coords = JSON.parse(existingCoords);
+      // Recreate the polygon on the map
+      var latlngs = coords.map(function(coord) {
+        return [coord[1], coord[0]];
+      });
+      var polygon = L.polygon(latlngs, {color: '#4CAF50', weight: 3}).addTo(drawnItems);
+      drawnItems.addLayer(polygon);
+      currentPolygon = polygon;
+      updatePolygonInfo(polygon);
+    }
   </script>
 </body>
 </html>
@@ -439,45 +466,49 @@ def main():
         ndvi_dates=[], ndvi_vals=[],
         lst_dates=[], lst_vals=[],
         active_layer="NDVI",
-        polygon_drawn=False,
-        polygon_coords=None
+        polygon_coords=None,
+        polygon_received=False
     )
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # JavaScript listener for polygon messages
-    polygon_html = """
+    # JavaScript to receive polygon coordinates
+    polygon_js = """
     <script>
+    // Listen for messages from the iframe
     window.addEventListener('message', function(event) {
         if (event.data.type === 'polygon_drawn') {
-            var coords = event.data.coordinates;
-            var input = document.createElement('input');
-            input.type = 'hidden';
-            input.id = 'polygon_coords';
-            input.value = JSON.stringify(coords);
-            document.body.appendChild(input);
-            input.dispatchEvent(new Event('change', {bubbles: true}));
-            
-            // Also store in localStorage for persistence
-            localStorage.setItem('drawn_polygon', JSON.stringify(coords));
+            console.log('Polygon received:', event.data.coordinates);
+            // Store in session storage
+            sessionStorage.setItem('polygon_coords', JSON.stringify(event.data.coordinates));
+            // Store in localStorage for persistence
+            localStorage.setItem('polygon_coords', JSON.stringify(event.data.coordinates));
+            // Force page reload by changing a query param
+            window.location.search = 'polygon=' + encodeURIComponent(JSON.stringify(event.data.coordinates));
         }
     });
     
-    // Check for existing polygon on load
-    var existingPolygon = localStorage.getItem('drawn_polygon');
-    if (existingPolygon) {
-        var coords = JSON.parse(existingPolygon);
-        var input = document.createElement('input');
-        input.type = 'hidden';
-        input.id = 'existing_polygon';
-        input.value = JSON.stringify(coords);
-        document.body.appendChild(input);
-        input.dispatchEvent(new Event('change', {bubbles: true}));
+    // Check for polygon in storage on load
+    var storedCoords = localStorage.getItem('polygon_coords');
+    if (storedCoords && !window.location.search.includes('polygon')) {
+        window.location.search = 'polygon=' + encodeURIComponent(storedCoords);
     }
     </script>
     """
-    components.html(polygon_html, height=0)
+    components.html(polygon_js, height=0)
+    
+    # Check URL parameters for polygon coordinates
+    query_params = st.query_params
+    if 'polygon' in query_params:
+        try:
+            coords_str = query_params['polygon']
+            coords = json.loads(coords_str)
+            st.session_state.polygon_coords = coords
+            st.session_state.polygon_received = True
+            st.success(f"✅ Polygon loaded with {len(coords)} points! Click 'Start Analysis' to process.")
+        except Exception as e:
+            st.error(f"Error loading polygon: {e}")
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
@@ -510,12 +541,18 @@ def main():
         if st.session_state.polygon_coords:
             st.subheader("📍 Current Polygon")
             st.success(f"✅ Polygon loaded with {len(st.session_state.polygon_coords)} points")
+            # Show preview of coordinates
+            with st.expander("Show coordinates"):
+                for i, coord in enumerate(st.session_state.polygon_coords[:5]):
+                    st.text(f"Point {i+1}: [{coord[0]}, {coord[1]}]")
+                if len(st.session_state.polygon_coords) > 5:
+                    st.text(f"... and {len(st.session_state.polygon_coords) - 5} more points")
         else:
-            st.info("⚠️ No polygon drawn yet. Draw one on the map first!")
+            st.warning("⚠️ No polygon drawn yet! Draw one on the map above.")
         
         st.divider()
         
-        # START ANALYSIS BUTTON - This is what you wanted!
+        # START ANALYSIS BUTTON
         st.subheader("🚀 Start Analysis")
         analyze_button = st.button(
             "🔍 START ANALYSIS", 
@@ -529,7 +566,7 @@ def main():
         st.subheader("📦 Datasets")
         st.markdown("""
 **NDVI:** `NASA/VIIRS/002/VNP09GA`
-Bands I1 & I2 · 500 m · (NIR−Red)/(NIR+Red)
+Bands I1 & I2 · 500 m
 
 **LST:** `NASA/VIIRS/002/VNP21A1D`
 Band LST_1KM · 1 km · Kelvin
@@ -555,7 +592,12 @@ Band LST_1KM · 1 km · Kelvin
         roi_geometry = ee.Geometry.Polygon(coords_list)
         st.session_state.roi_geometry = roi_geometry
         
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
         try:
+            status_text.text("🔄 Loading NDVI tile layer...")
+            progress_bar.progress(20)
             url, cnt = get_ndvi_tile_url(roi_geometry, start_str, end_str)
             st.session_state.ndvi_url = url
             st.session_state.ndvi_count = cnt
@@ -563,6 +605,8 @@ Band LST_1KM · 1 km · Kelvin
             st.warning(f"NDVI tile error: {e}")
         
         try:
+            status_text.text("🔄 Loading LST tile layer...")
+            progress_bar.progress(40)
             url, cnt = get_lst_tile_url(roi_geometry, start_str, end_str)
             st.session_state.lst_url = url
             st.session_state.lst_count = cnt
@@ -570,6 +614,8 @@ Band LST_1KM · 1 km · Kelvin
             st.warning(f"LST tile error: {e}")
         
         try:
+            status_text.text("🔄 Loading NDVI dataset (this may take 30-60 seconds)...")
+            progress_bar.progress(60)
             ds, _ = load_ndvi_xarray(roi_geometry, start_str, end_str, scale_deg)
             ds_loaded = ds.compute()
             st.session_state.ds_ndvi = ds_loaded
@@ -580,6 +626,8 @@ Band LST_1KM · 1 km · Kelvin
             st.warning(f"NDVI xarray error: {e}")
         
         try:
+            status_text.text("🔄 Loading LST dataset...")
+            progress_bar.progress(80)
             ds, _ = load_lst_xarray(roi_geometry, start_str, end_str, scale_deg)
             ds_loaded = ds.compute()
             st.session_state.ds_lst = ds_loaded
@@ -588,6 +636,9 @@ Band LST_1KM · 1 km · Kelvin
             st.session_state.lst_vals = [v - 273.15 for v in vals]
         except Exception as e:
             st.warning(f"LST xarray error: {e}")
+        
+        progress_bar.progress(100)
+        status_text.text("✅ Data loaded successfully!")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab0, tab1, tab2, tab3, tab4 = st.tabs([
@@ -604,9 +655,10 @@ Band LST_1KM · 1 km · Kelvin
         st.info(
             "**Instructions:**\n\n"
             "1️⃣ Use the **polygon (⬟) tool** in the top-left toolbar\n\n"
-            "2️⃣ Draw a polygon around your area of interest\n\n"
-            "3️⃣ After drawing, go to the **sidebar** and click **'START ANALYSIS'**\n\n"
-            "4️⃣ Wait for data to load, then explore results in other tabs!"
+            "2️⃣ Click on the map to draw a polygon around your area of interest\n\n"
+            "3️⃣ Double-click to finish drawing\n\n"
+            "4️⃣ After drawing, you'll see a green polygon and coordinates\n\n"
+            "5️⃣ Go to the **sidebar** and click **'START ANALYSIS'**"
         )
         
         # Render the draw map
@@ -614,16 +666,6 @@ Band LST_1KM · 1 km · Kelvin
         cy = st.session_state.map_center[0]
         cz = st.session_state.map_zoom
         render_draw_map(cy, cx, cz)
-        
-        # Check for polygon from JavaScript
-        import streamlit.web.cli as stcli
-        if st.query_params.get("polygon"):
-            try:
-                coords = json.loads(st.query_params["polygon"])
-                st.session_state.polygon_coords = coords
-                st.success("✅ Polygon loaded! Now click 'START ANALYSIS' in the sidebar.")
-            except:
-                pass
 
     # ── Tab 1: Data Map ───────────────────────────────────────────────────────
     with tab1:
@@ -652,6 +694,14 @@ Band LST_1KM · 1 km · Kelvin
                         fill_opacity=0.3,
                         popup='Your AOI'
                     ).add_to(m)
+                    
+                    # Center map on polygon
+                    lats = [lat for lon, lat in ring]
+                    lons = [lon for lon, lat in ring]
+                    center_lat = sum(lats) / len(lats)
+                    center_lon = sum(lons) / len(lons)
+                    m.location = [center_lat, center_lon]
+                    m.zoom_start = 8
                     
                     from streamlit_folium import folium_static
                     folium_static(m, width=700, height=400)
@@ -747,11 +797,13 @@ Band LST_1KM · 1 km · Kelvin
 
 1. **Draw Polygon Tab**: 
    - Click on the polygon tool (⬟) in the top-left of the map
-   - Draw your area of interest by clicking points on the map
+   - Click points on the map to draw your area of interest
    - Double-click to finish drawing
+   - You'll see a green polygon appear
 
 2. **Start Analysis**:
    - After drawing, go to the **sidebar** on the left
+   - Look for the green success message showing your polygon
    - Click the big green **"START ANALYSIS"** button
    - Wait 30-60 seconds for data to load
 
