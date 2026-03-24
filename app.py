@@ -91,84 +91,96 @@ DRAW_MAP_HTML = """
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { background:#0e1117; color:#fafafa; font-family:sans-serif; }
-    #map { height: 420px; width: 100%; }
+    #map { height: 400px; width: 100%; }
     #coords-panel {
-      background:#1e2130; padding:12px 16px; font-size:13px;
-      border-top: 1px solid #333;
+      background:#1e2130; 
+      padding: 15px;
+      border-top: 2px solid #4CAF50;
+      max-height: 200px;
+      overflow-y: auto;
     }
-    #coords-panel b { color:#4CAF50; }
-    #coord-values {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      margin-top: 12px;
-    }
-    .coord-box {
-      background:#0e1117; 
-      border: 1px solid #4CAF50; 
-      border-radius: 8px;
-      padding: 10px 12px; 
-      font-size: 13px; 
-      color: #ccc;
+    .panel-title {
+      font-size: 14px;
+      font-weight: bold;
+      color: #4CAF50;
+      margin-bottom: 12px;
       text-align: center;
     }
-    .coord-box span { 
-      color: #4CAF50; 
-      font-weight: bold; 
-      font-size: 16px; 
-      display: block;
-      margin-bottom: 5px;
+    .coord-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 12px;
     }
-    .coord-value {
-      color: #fff;
-      font-size: 18px;
-      font-weight: bold;
-      font-family: monospace;
-      letter-spacing: 0.5px;
+    .coord-card {
+      flex: 1;
+      min-width: 200px;
+      background: #0e1117;
+      border-radius: 8px;
+      padding: 10px;
+      border-left: 3px solid #4CAF50;
     }
     .coord-label {
       font-size: 11px;
       color: #888;
-      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
-    #hint { 
-      color: #FFA500; 
-      font-size: 12px; 
-      margin-top: 12px;
-      padding: 8px;
+    .coord-value {
+      font-size: 20px;
+      font-weight: bold;
+      font-family: 'Courier New', monospace;
+      color: #fff;
+      margin: 5px 0;
+    }
+    .coord-desc {
+      font-size: 10px;
+      color: #666;
+    }
+    .hint-box {
       background: rgba(76, 175, 80, 0.1);
       border-radius: 6px;
+      padding: 10px;
       text-align: center;
+      font-size: 12px;
+      color: #FFA500;
+      margin-top: 10px;
+    }
+    .success-hint {
+      background: rgba(76, 175, 80, 0.2);
+      color: #4CAF50;
     }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="coords-panel">
-    <b>📐 Draw a rectangle on the map to get coordinates</b>
-    <div id="coord-values">
-      <div class="coord-box">
-        <span>🌍 Min Lon (West)</span>
+    <div class="panel-title">📐 DRAW RECTANGLE TO GET COORDINATES</div>
+    <div class="coord-grid" id="coord-grid">
+      <div class="coord-card">
+        <div class="coord-label">WEST LONGITUDE</div>
         <div class="coord-value" id="min-lon">—</div>
-        <div class="coord-label">Longitude left boundary</div>
+        <div class="coord-desc">Min Lon (left boundary)</div>
       </div>
-      <div class="coord-box">
-        <span>🌍 Max Lon (East)</span>
+      <div class="coord-card">
+        <div class="coord-label">EAST LONGITUDE</div>
         <div class="coord-value" id="max-lon">—</div>
-        <div class="coord-label">Longitude right boundary</div>
+        <div class="coord-desc">Max Lon (right boundary)</div>
       </div>
-      <div class="coord-box">
-        <span>📍 Min Lat (South)</span>
+      <div class="coord-card">
+        <div class="coord-label">SOUTH LATITUDE</div>
         <div class="coord-value" id="min-lat">—</div>
-        <div class="coord-label">Latitude bottom boundary</div>
+        <div class="coord-desc">Min Lat (bottom boundary)</div>
       </div>
-      <div class="coord-box">
-        <span>📍 Max Lat (North)</span>
+      <div class="coord-card">
+        <div class="coord-label">NORTH LATITUDE</div>
         <div class="coord-value" id="max-lat">—</div>
-        <div class="coord-label">Latitude top boundary</div>
+        <div class="coord-desc">Max Lat (top boundary)</div>
       </div>
     </div>
-    <div id="hint">✏️ Use the ▭ rectangle tool in the top-left toolbar, then copy the values above into the sidebar.</div>
+    <div class="hint-box" id="hint">
+      ✏️ Click the ▭ rectangle tool in top-left corner, draw a rectangle on the map
+    </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -212,22 +224,15 @@ DRAW_MAP_HTML = """
       var maxLon = fmt(b.getEast());
       var minLat = fmt(b.getSouth());
       var maxLat = fmt(b.getNorth());
+      
       document.getElementById('min-lon').textContent = minLon;
       document.getElementById('max-lon').textContent = maxLon;
       document.getElementById('min-lat').textContent = minLat;
       document.getElementById('max-lat').textContent = maxLat;
-      document.getElementById('hint').innerHTML = 
-        '✅ <strong>Coordinates captured!</strong> Copy these four values into the sidebar AOI inputs, then click Load & Process Data.';
       
-      // Add a visual feedback by highlighting the boxes briefly
-      var boxes = document.getElementsByClassName('coord-box');
-      for(var i = 0; i < boxes.length; i++) {
-        boxes[i].style.borderColor = '#4CAF50';
-        boxes[i].style.transition = 'border-color 0.3s';
-        setTimeout(function(box) {
-          box.style.borderColor = '#4CAF50';
-        }, 300, boxes[i]);
-      }
+      var hintDiv = document.getElementById('hint');
+      hintDiv.innerHTML = '✅ COORDINATES CAPTURED! Copy these values to sidebar inputs: Min Lon=' + minLon + ', Max Lon=' + maxLon + ', Min Lat=' + minLat + ', Max Lat=' + maxLat;
+      hintDiv.className = 'hint-box success-hint';
     });
   </script>
 </body>
@@ -260,7 +265,7 @@ def render_draw_map(center_lat, center_lon, zoom, roi_coords=None, ee_tile_url=N
             .replace("EXISTING_RECT", existing)
             .replace("EE_TILES", ee_tiles))
 
-    components.html(html, height=560, scrolling=False)
+    components.html(html, height=620, scrolling=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -495,13 +500,19 @@ def main():
 
         st.subheader("📐 AOI Bounding Box")
         st.caption("Draw on the map (tab 1) to find coordinates, then enter them here.")
-        c1, c2 = st.columns(2)
-        with c1:
-            min_lon = st.number_input("Min Lon (West)", value=-10.0, min_value=-180.0, max_value=180.0, format="%.4f", step=0.5)
-            min_lat = st.number_input("Min Lat (South)", value=4.0, min_value=-90.0, max_value=90.0, format="%.4f", step=0.5)
-        with c2:
-            max_lon = st.number_input("Max Lon (East)", value=2.0, min_value=-180.0, max_value=180.0, format="%.4f", step=0.5)
-            max_lat = st.number_input("Max Lat (North)", value=12.0, min_value=-90.0, max_value=90.0, format="%.4f", step=0.5)
+        
+        # Create a more intuitive layout with 2 columns
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Longitude**")
+            min_lon = st.number_input("Min (West)", value=-10.0, min_value=-180.0, max_value=180.0, format="%.5f", step=0.5, key="min_lon")
+            st.markdown("**Latitude**")
+            min_lat = st.number_input("Min (South)", value=4.0, min_value=-90.0, max_value=90.0, format="%.5f", step=0.5, key="min_lat")
+        with col2:
+            st.markdown("**Longitude**")
+            max_lon = st.number_input("Max (East)", value=2.0, min_value=-180.0, max_value=180.0, format="%.5f", step=0.5, key="max_lon")
+            st.markdown("**Latitude**")
+            max_lat = st.number_input("Max (North)", value=12.0, min_value=-90.0, max_value=90.0, format="%.5f", step=0.5, key="max_lat")
 
         if min_lon >= max_lon or min_lat >= max_lat:
             st.error("Min values must be less than Max values.")
